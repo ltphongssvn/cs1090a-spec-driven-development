@@ -140,6 +140,53 @@ else
 fi
 '''
 
+# --- Repository configuration -------------------------------------------------
+
+[tasks."repo:configure"]
+description = "Apply repository settings and branch ruleset (idempotent)"
+# GOVERNANCE AS CODE. Repository settings clicked in a web UI are invisible to
+# the repo, unreviewable and unreproducible -- and the sibling project shipped
+# its first pull request with NO protection and NO required check.
+#
+# MERGE COMMITS ONLY: GitFlow depends on merge topology, and squashing would
+# collapse commits whose reasoning is the most valuable thing in this history.
+#
+# THE READBACK IS THE POINT. Applying a ruleset proves a request was accepted;
+# reading it back proves what the SERVER now holds. A ruleset edited to require
+# nothing is the failure mode that looks exactly like success.
+run = '''
+set -euo pipefail
+
+gh api -X PATCH "repos/{owner}/{repo}" \
+  -F allow_auto_merge=true \
+  -F allow_merge_commit=true \
+  -F allow_squash_merge=false \
+  -F allow_rebase_merge=false \
+  -F delete_branch_on_merge=true \
+  > /dev/null
+echo "settings applied"
+
+name="develop-and-main-protection"
+existing="$(gh api "repos/{owner}/{repo}/rulesets" --jq \
+  ".[] | select(.name == \"$name\") | .id" || true)"
+
+if [ -n "$existing" ]; then
+  gh api -X PUT "repos/{owner}/{repo}/rulesets/$existing" \
+    --input contracts/ruleset-develop-and-main.json > /dev/null
+  echo "ruleset updated (id $existing)"
+else
+  gh api -X POST "repos/{owner}/{repo}/rulesets" \
+    --input contracts/ruleset-develop-and-main.json > /dev/null
+  echo "ruleset created"
+fi
+
+echo "--- readback ---"
+gh api "repos/{owner}/{repo}" \
+  --jq '{auto_merge:.allow_auto_merge, merge_commit:.allow_merge_commit, squash:.allow_squash_merge, rebase:.allow_rebase_merge, delete_on_merge:.delete_branch_on_merge}'
+gh api "repos/{owner}/{repo}/rulesets" \
+  --jq '.[] | {id, name, enforcement}'
+'''
+
 # --- Workflow -----------------------------------------------------------------
 
 [tasks.status]
@@ -207,10 +254,9 @@ esac
 
 # --- Worktrees ----------------------------------------------------------------
 # SHELL FOR NOW, DELIBERATELY, AND THIS IS THE ONE PLACE THE REPOSITORY OWES
-# ITSELF A DEBT. The sibling project's worktree tasks delegate to a TESTED
-# Python module; ours cannot yet, because the module that would own this logic
-# has no failing test to justify it, and writing it first would invert the TDD
-# order this project is built to hold.
+# ITSELF A DEBT. These tasks should delegate to a TESTED Python module; they
+# cannot yet, because that module has no failing test to justify it, and writing
+# it first would invert the TDD order this project is built to hold.
 #
 # The shell version is therefore the BOOTSTRAP: enough to cut the first
 # worktree, inside which the tested module gets written and these tasks get
