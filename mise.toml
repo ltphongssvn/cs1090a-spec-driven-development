@@ -1,0 +1,289 @@
+# mise.toml
+# TASKS. The toolchain lives in flake.nix; this file does not own tools.
+#
+# EVERY PROJECT OPERATION IS A TASK. Not a remembered command, not a paste from
+# scrollback. A one-off CLI invocation is behaviour that exists only in one
+# person's shell history: untested, undiscoverable, impossible to change
+# deliberately, and invisible to review.
+#
+# --- WHY THERE IS NO [tools] BLOCK --------------------------------------------
+#
+# Declaring the same tools here AND in flake.nix is two declarations of one
+# fact, which is exactly the drift this repository exists to remove, reproduced
+# at its centre. flake.nix is the single declaration.
+#
+# THERE IS ALSO NO [settings] BLOCK. `lockfile = true` and `install_before`
+# govern mise's TOOL INSTALLATION. With no tools to install they enforce
+# nothing, and a setting that enforces nothing is a claim of coverage this
+# repository does not make. flake.lock is the lockfile.
+
+# --- Task interpreter ---------------------------------------------------------
+[task_config]
+# EVERY TASK RUNS INSIDE THE NIX DEVSHELL. Without it `uv`, `opa` and the rest
+# are unresolvable, because nothing puts them on PATH for a task body.
+#
+# THE SHELL IS ALSO PINNED. mise defaults to `sh`, which is bash-in-POSIX-mode
+# on macOS and dash on the Ubuntu runner: same task body, different interpreter,
+# green locally and dead in CI.
+#
+# BASH DOES NOT SET errexit, WHICH IS WHY EVERY MULTI-COMMAND TASK BELOW OPENS
+# WITH `set -euo pipefail`.
+shell = "nix develop --command bash -c"
+
+# --- Nix ----------------------------------------------------------------------
+
+[tasks."nix:shell"]
+description = "Enter the Nix devShell interactively"
+run = "nix develop"
+
+[tasks."nix:flake-check"]
+description = "Evaluate the flake on every supported platform"
+# --all-systems IS THE POINT. Without it only the current platform is checked,
+# and a package present on Darwin but not Linux passes locally and breaks on the
+# runner.
+run = "nix flake check --no-build --all-systems"
+
+# --- Individual gates ---------------------------------------------------------
+#
+# EACH IS ITS OWN TASK so it works standalone during iteration. `check` will
+# later AGGREGATE them via a runner module; it does not replace them, and there
+# is no second copy of the list to drift.
+#
+# EVERY TASK RUNS PYTHON THROUGH uv, NEVER BARE python3.
+
+[tasks.fmt]
+description = "Apply every safe autofix: formatting AND import ordering"
+# `;` NOT `&&`. ruff check --fix exits non-zero when a finding has no safe
+# autofix, which with && would stop the formatter running -- and the formatter
+# is often what resolves the remaining finding, since line-length is fixed by
+# rewrapping.
+run = "uv run ruff check --fix . ; uv run ruff format ."
+
+[tasks.lint]
+description = "Lint (the same invocation the gate runner uses)"
+run = "uv run ruff check ."
+
+[tasks.types]
+description = "Static type check, for every platform this code runs on"
+# BOTH PLATFORMS, DELIBERATELY. mypy defaults to whichever OS it runs on and
+# NARROWS sys.platform comparisons, so a Darwin-only branch is invisible to a
+# Linux run and vice versa.
+run = '''
+set -euo pipefail
+uv run mypy --platform darwin src tests
+uv run mypy --platform linux src tests
+'''
+
+[tasks.test]
+description = "Hermetic tests: no network, no credentials"
+run = "uv run pytest"
+
+[tasks."test:integration"]
+description = "Tests requiring network and credentials"
+# WITHOUT THIS THE INTEGRATION TESTS RUN NOWHERE. They are deselected from the
+# default run by design, so writing one and stopping there produces a test that
+# exists and never executes.
+run = "uv run pytest -m integration"
+
+[tasks."check:secrets"]
+description = "Scan the FULL HISTORY for committed credentials"
+# --redact IS NOT COSMETIC: without it a finding prints the credential into a CI
+# log that is retained and often world-readable.
+run = "betterleaks git --redact --no-banner"
+
+[tasks."check:deps"]
+description = "Scan uv.lock for known vulnerabilities"
+run = "osv-scanner scan source --lockfile uv.lock"
+
+# --- Onboarding ---------------------------------------------------------------
+
+[tasks.setup]
+description = "One-command onboarding: dependencies and git hooks"
+# `lefthook install` writes into .git/hooks, which is NOT version controlled. A
+# fresh clone has no hooks at all, so the person who most needs the guardrails
+# is the one running without them.
+#
+# NEVER ADD -f TO lefthook install. Without it, lefthook declines when
+# core.hooksPath points elsewhere. With it, lefthook force-installs into
+# whatever that path resolves to -- and when that is a GLOBAL hooks directory,
+# this repo's hooks start running in every repository on the machine.
+run = '''
+set -euo pipefail
+
+hooks_path="$(git config --get core.hooksPath || true)"
+if [ -n "$hooks_path" ]; then
+  echo "refusing: core.hooksPath is set to '$hooks_path'." >&2
+  echo "lefthook would decline rather than clobber it, which is correct --" >&2
+  echo "but you would be left with no hooks and no explanation." >&2
+  echo "" >&2
+  echo "inspect first:" >&2
+  echo "  git config --show-origin --get-all core.hooksPath" >&2
+  echo "then clear it deliberately:" >&2
+  echo "  git config --unset core.hooksPath" >&2
+  exit 1
+fi
+
+uv sync --locked --all-groups
+lefthook install
+
+echo
+echo "setup complete. hooks active:"
+# RESOLVE THE HOOKS PATH; NEVER ASSUME .git/hooks. In a linked worktree .git is
+# a FILE pointing at .git/worktrees/<name>, so `ls .git/hooks` fails with "Not a
+# directory" -- and that cosmetic listing takes the exit code with it after
+# every real step has succeeded.
+hooks_dir="$(git rev-parse --git-path hooks)"
+if [ -d "$hooks_dir" ]; then
+  ls "$hooks_dir" | grep -v sample | sed 's|^|  |'
+else
+  echo "  (none found at $hooks_dir)"
+fi
+'''
+
+# --- Workflow -----------------------------------------------------------------
+
+[tasks.status]
+description = "Show branch, working tree, and how it relates to develop"
+run = '''
+set -euo pipefail
+echo "branch:   $(git rev-parse --abbrev-ref HEAD)"
+echo "upstream: $(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo '(none)')"
+echo
+echo "--- working tree ---"
+if [ -z "$(git status --porcelain)" ]; then
+  echo "clean"
+else
+  git status --short
+fi
+echo
+echo "--- unmerged into develop ---"
+git log --oneline develop..HEAD 2>/dev/null || echo "(on develop)"
+'''
+
+[tasks."pr-status"]
+description = "Show merge state and checks for the current branch's PR"
+run = "gh pr view --json number,title,mergeable,mergeStateStatus,statusCheckRollup --jq '{pr:.number,title,mergeable,state:.mergeStateStatus,checks:[.statusCheckRollup[]|{name,conclusion}]}'"
+
+[tasks."start:check"]
+description = "Refuse to work on a protected branch"
+# Wired into the pre-commit hook so the guard fires before a commit lands rather
+# than after.
+run = '''
+set -euo pipefail
+branch="$(git rev-parse --abbrev-ref HEAD)"
+case "$branch" in
+  develop|main)
+    echo "refusing: on protected branch '$branch'." >&2
+    echo "" >&2
+    echo "GitFlow: work happens on a feature branch cut from origin/develop." >&2
+    echo "" >&2
+    echo "nothing is lost -- carry the work across with:" >&2
+    echo "  git switch -c feature/<slug>" >&2
+    exit 1 ;;
+esac
+echo "on $branch (not protected)"
+'''
+
+[tasks."start:here"]
+description = "Cut a feature branch from origin/develop in THIS shell"
+# PRINTS the command instead of pretending to run it, because a mise task runs
+# in a subshell and cannot change the invoking shell's branch:
+#
+#   eval "$(mise run start:here <slug>)"
+usage = '''
+arg "<slug>" help="Short kebab-case description, e.g. spec-governance-core"
+'''
+run = '''
+set -euo pipefail
+slug="$usage_slug"
+
+case "$slug" in
+  *[!a-z0-9-]*|"")
+    echo "echo 'slug must be lowercase kebab-case: $slug' >&2; false" ;;
+  *)
+    echo "git fetch origin --prune --quiet && git switch -c feature/$slug origin/develop" ;;
+esac
+'''
+
+# --- Worktrees ----------------------------------------------------------------
+# SHELL FOR NOW, DELIBERATELY, AND THIS IS THE ONE PLACE THE REPOSITORY OWES
+# ITSELF A DEBT. The sibling project's worktree tasks delegate to a TESTED
+# Python module; ours cannot yet, because the module that would own this logic
+# has no failing test to justify it, and writing it first would invert the TDD
+# order this project is built to hold.
+#
+# The shell version is therefore the BOOTSTRAP: enough to cut the first
+# worktree, inside which the tested module gets written and these tasks get
+# repointed at it.
+#
+# THE ? IN ${usage_slug?} IS THE POINT: bash parameter expansion that FAILS when
+# the variable is unset rather than expanding to empty. Without it a missing
+# argument becomes `worktree remove ""`, a command that runs and does something
+# nobody asked for.
+
+[tasks."worktree:add"]
+description = "Create a sibling worktree on a new feature branch, cut from origin/develop"
+usage = '''
+arg "<slug>" help="Short kebab-case description, e.g. spec-governance-core"
+'''
+run = '''
+set -euo pipefail
+slug="${usage_slug?}"
+
+case "$slug" in
+  *[!a-z0-9-]*|"")
+    echo "refusing: slug must be lowercase kebab-case: '$slug'" >&2
+    exit 1 ;;
+esac
+
+# ASK GIT FOR THE LAYOUT; NEVER DERIVE IT FROM $PWD. Run from inside a linked
+# worktree, $PWD is the worktree and not the repository, so every sibling path
+# computed from it lands one level too deep.
+common="$(git rev-parse --git-common-dir)"
+root="$(cd "$(dirname "$common")" && pwd)"
+parent="$(dirname "$root")"
+siblings="$parent/$(basename "$root")-worktrees"
+target="$siblings/$slug"
+
+if [ -e "$target" ]; then
+  echo "refusing: '$target' already exists" >&2
+  exit 1
+fi
+
+# FETCH FIRST. Branching from a local `develop` cuts from whatever this machine
+# last pulled, which is how a feature branch quietly starts life behind the
+# integration branch.
+git fetch origin --prune --quiet
+
+mkdir -p "$siblings"
+git worktree add -b "feature/$slug" "$target" origin/develop
+
+echo
+echo "worktree ready:"
+git worktree list
+'''
+
+[tasks."worktree:list"]
+description = "List worktrees, their branches, and any locked or prunable flags"
+run = "git worktree list --porcelain"
+
+[tasks."worktree:remove"]
+description = "Remove a worktree and delete its branch, refusing to force either"
+usage = '''
+arg "<slug>" help="The slug used with worktree:add"
+'''
+run = '''
+set -euo pipefail
+slug="${usage_slug?}"
+
+common="$(git rev-parse --git-common-dir)"
+root="$(cd "$(dirname "$common")" && pwd)"
+target="$(dirname "$root")/$(basename "$root")-worktrees/$slug"
+
+# NO --force, EITHER TIME. `worktree remove` refuses when the tree is dirty and
+# `branch -d` refuses when the branch is unmerged; both refusals are the feature.
+git worktree remove "$target"
+git branch -d "feature/$slug"
+
+echo "removed $target and feature/$slug"
+'''
