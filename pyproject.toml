@@ -2,7 +2,7 @@
 [project]
 name = "cs1090a-spec-driven-development"
 version = "0.1.0"
-description = "Spec-driven development for an enterprise SaaS: the specification is the source, the code is the build output"
+description = "Statutory leave and absence compliance, built spec-first: the statute is the specification, the determination is evidence"
 # MUST MATCH .python-version. One fact, declared twice, drifts; the env-parity
 # gate enforces the link so a mismatch fails a check rather than surfacing as a
 # confusing runtime error weeks later.
@@ -12,10 +12,11 @@ requires-python = "==3.12.3"
 # because the contracts execute inside the service, not only in the test suite.
 #
 #   pydantic    the project's single source of type truth. Every boundary --
-#               HTTP request, HTTP response, spec document, stored row -- is a
-#               pydantic model first, and the implementation is written against
-#               the model. pydantic-core is Rust via pyo3, so validating on
-#               every request is cheap enough to leave on in production.
+#               HTTP request, HTTP response, statute specification, emitted
+#               determination -- is a pydantic model first, and the
+#               implementation is written against the model. pydantic-core is
+#               Rust via pyo3, so validating on every request is cheap enough to
+#               leave on in production.
 #   fastapi     chosen BECAUSE it derives its OpenAPI document from the pydantic
 #               models rather than from a hand-written YAML file. That makes the
 #               published contract a FUNCTION of the types: it cannot drift from
@@ -39,6 +40,29 @@ dev = [
   # issues one WITHOUT binding a socket -- so the acceptance test is hermetic
   # and can sit behind a git hook.
   "httpx>=0.28",
+  # THE ASYNC TEST RUNNER. httpx's AsyncClient returns coroutines, and pytest
+  # does not await them: without a plugin an `async def` test is COLLECTED,
+  # SKIPPED WITH A WARNING, AND REPORTED AS PASSING -- a test that never ran and
+  # never said so, which is exactly the false-positive completion this project
+  # exists to make impossible.
+  "anyio>=4.6",
+  # MUTATION TESTING, FROM DAY ONE AND NOT AS A RATCHET.
+  #
+  # A green suite proves the code RUNS. It does not prove the assertions would
+  # NOTICE if the code were wrong. The source's own Listing 2.1 is a passing
+  # test that asserts nothing useful, and section 3.2.4 names the general case:
+  # a weak check invites a weak completion.
+  #
+  # ZERO SURVIVORS, NOT A PERCENTAGE FLOOR. A ratchet is the right tool when
+  # mutation testing arrives late against thousands of existing mutants. It
+  # arrives here on day one against a handful, so the only defensible threshold
+  # is the one that never needs renegotiating. Every survivor is either an
+  # assertion worth writing or a line worth deleting.
+  #
+  # IN THIS DOMAIN IT IS NOT OPTIONAL. A surviving mutant in an eligibility rule
+  # is a statute this service can get wrong without any test objecting, and the
+  # party who discovers it is a regulator.
+  "mutmut>=3.2",
   # AMBIENT PROCESS STATE, MADE A VALIDATED SNAPSHOT. Environment variables
   # decide which database a command reaches and whether a deploy runs at all.
   # SecretStr also renders as ********** when printed, which is a stronger
@@ -62,6 +86,11 @@ line-length = 100
 # known-first-party = [...] goes stale once per module added, and the failure is
 # silent: imports sort as third-party until lint eventually says so.
 src = ["src", "tests"]
+# MUTMUT'S SCRATCH COPY IS NOT SOURCE. It is a generated tree of deliberately
+# broken variants of this package; linting it reports thousands of findings
+# describing mutants rather than code, and formatting it would rewrite the very
+# mutations under test.
+extend-exclude = ["mutants"]
 
 [tool.ruff.lint]
 # Deliberately broader than defaults. S is bandit: executed CODE gets checked,
@@ -79,6 +108,9 @@ select = ["E", "F", "I", "N", "UP", "B", "S", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+# SAME REASON AS ruff's extend-exclude: type-checking deliberately broken code
+# reports the mutations, not defects.
+exclude = ["mutants/.*"]
 
 # --- Fail closed --------------------------------------------------------------
 # strict = true is not the ceiling. These turn silence into failure.
@@ -125,3 +157,39 @@ addopts = ["--strict-markers", "--strict-config", "-ra", "-m", "not integration"
 # An xfail that PASSES is a failure. Otherwise a fixed bug leaves its xfail in
 # place forever and the suite reports success for a test asserting nothing.
 xfail_strict = true
+
+[tool.mutmut]
+# WHAT GETS MUTATED: the shipped package only.
+#
+# NOT tests/. Mutating a test file produces mutants that are trivially "killed"
+# by the mutated test failing itself, which inflates the score while measuring
+# nothing.
+#
+# `source_paths`, NOT `paths_to_mutate`. The older key still works and emits a
+# DeprecationWarning -- which is exactly the kind of notice that scrolls past in
+# CI until the key is removed and mutation silently covers nothing.
+source_paths = ["src/cs1090a_spec_driven_development"]
+
+# THE RUNNER, AND WHY IT CARRIES A PYTHONPATH.
+#
+# mutmut COPIES the tree to ./mutants and runs the suite with that directory as
+# the working directory. The package is installed EDITABLE, and uv's editable
+# install is a .pth file holding an ABSOLUTE path to the real ./src -- so inside
+# ./mutants, `import cs1090a_spec_driven_development` resolved to the UNMUTATED
+# original. Every test passed against untouched code, and mutmut correctly
+# reported that no test covered any mutant rather than reporting a false green.
+#
+# PYTHONPATH WINS BECAUSE OF ORDERING, NOT PRECEDENCE TRICKS: sys.path takes
+# PYTHONPATH entries before `site` appends .pth entries, so the mutated copy is
+# found first. Verified by importing the module under each configuration and
+# printing __file__, rather than inferred from the error message.
+#
+# THE INTERPRETER IS THE PARENT'S VENV BY EXPLICIT RELATIVE PATH. Running
+# `uv run` from inside ./mutants made uv treat that copied tree as its own
+# project and BUILD A SECOND VIRTUALENV there -- a different resolution of the
+# same lockfile, which is the drift this repository exists to remove.
+#
+# -x STOPS AT THE FIRST FAILURE, which is correct HERE and nowhere else: a
+# mutant is dead the moment ANY test notices it, so running the rest of the
+# suite buys no information and costs the whole runtime, once per mutant.
+runner = "PYTHONPATH=src ../.venv/bin/pytest -x -q --no-header"
