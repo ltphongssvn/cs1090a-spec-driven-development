@@ -78,6 +78,14 @@ description = "Tests requiring network and credentials"
 # exists and never executes.
 run = "uv run pytest -m integration"
 
+[tasks."check:workflow"]
+description = "Audit the GitHub Actions workflow that runs this gate"
+# THE PIPELINE AUDITS ITSELF. zizmor found actions/checkout persisting the job
+# token in .git/config -- a credential left on disk for a run whose last step
+# uploads an artifact directory. Running it as a task means the next such change
+# is caught by the pipeline rather than by someone remembering to look.
+run = "zizmor .github/workflows/ci.yml"
+
 [tasks."check:secrets"]
 description = "Scan the FULL HISTORY for committed credentials"
 # --redact IS NOT COSMETIC: without it a finding prints the credential into a CI
@@ -87,6 +95,30 @@ run = "betterleaks git --redact --no-banner"
 [tasks."check:deps"]
 description = "Scan uv.lock for known vulnerabilities"
 run = "osv-scanner scan source --lockfile uv.lock"
+
+# --- Authoring ----------------------------------------------------------------
+
+[tasks.author]
+description = "Write a file from stdin, atomically, then judge what landed"
+# THE SHELL STOPS BEING THE WRITER.
+#
+#   mise run author path/to/file << 'EOF'
+#   ...exact source bytes...
+#   EOF
+#
+# A REDIRECT CREATES THE FILE AND NEVER THE DIRECTORY, truncates the target
+# before the payload arrives, and applies whatever newline translation the
+# terminal decides on. This reads raw bytes from stdin, creates parents, writes
+# to a sibling temporary file and renames it over the target -- then reads it
+# BACK and emits a Verdict, so a corrupted transport fails the command rather
+# than passing because `cat` returned zero.
+#
+# A HEREDOC FEEDING AN INTERPRETER IS FINE, and is what 2026 tooling permits
+# while blocking `cat > file`. The shell carries bytes; Python writes them.
+usage = '''
+arg "<path>" help="Path relative to the repository root"
+'''
+run = 'uv run python -m cs1090a_spec_driven_development author "${usage_path?}"'
 
 # --- Mutation testing ---------------------------------------------------------
 #
@@ -105,9 +137,6 @@ description = "Mutate the package and run the suite against every mutant, from s
 # survivors while a scratch run of the same code reported 7. A gate reading that
 # artifact would have published a number nobody produced -- the same class of
 # defect as a verdict announced by `echo`, one layer further back.
-#
-# THE COST IS THE WHOLE RUN, WHICH IS THE POINT. Mutation testing that reuses
-# yesterday's answer is not measurement.
 run = '''
 set -euo pipefail
 rm -rf mutants
@@ -246,6 +275,13 @@ echo
 echo "--- unmerged into develop ---"
 git log --oneline develop..HEAD 2>/dev/null || echo "(on develop)"
 '''
+
+[tasks.pr]
+description = "Open a pull request against develop"
+# --fill USES THE COMMIT MESSAGES, which in this repository carry the reasoning
+# a reviewer needs. Retyping them into a PR body would create a second account
+# that drifts from the first.
+run = "gh pr create --base develop --fill"
 
 [tasks."pr-status"]
 description = "Show merge state and checks for the current branch's PR"

@@ -1,49 +1,55 @@
 # src/cs1090a_spec_driven_development/__main__.py
-# THE COMMAND-LINE ENTRY POINT FOR GATES.
+# THE COMMAND-LINE ENTRY POINT FOR GATES AND FOR AUTHORING.
 #
-# WHY A __main__ RATHER THAN A SCRIPT IN tools/. The gates import the same
+# WHY A __main__ RATHER THAN A SCRIPT IN tools/. These commands import the same
 # contracts the service uses, so they ship WITH the package and are exercised by
 # the same test suite. A loose script beside the repository is code that nothing
 # typechecks and nothing mutates -- the condition this project exists to remove.
 #
 # THE EXIT CODE COMES FROM THE VERDICT, NEVER THE OTHER WAY ROUND. The verdict
 # is derived from checks by the contract; this module only translates it for the
-# shell. That ordering is what stops a gate announcing success because the last
-# command happened to exit zero.
+# shell. That ordering is what stops a command announcing success because the
+# previous process happened to exit zero.
 #
 #   0  pass
 #   1  fail       something was measured and it was wrong
-#   2  unknown    nothing was measured, or the run did not finish, or the
-#                 caller asked for a gate that does not exist
+#   2  unknown    nothing was measured, the run did not finish, or the caller
+#                 asked for something that does not exist
 #
-# THE VERDICT IS BOTH PRINTED AND WRITTEN. Printed on STDOUT so it can be piped
-# into jq; the human note goes to STDERR so it cannot corrupt that pipe. Written
-# to .artifacts/verdicts/ so it is queryable, diffable and attestable
-# afterwards, because a verdict living only in a scrollback is the ephemeral
-# console output this project replaced.
+# --- WHY `author` EXISTS ------------------------------------------------------
 #
-# --- WHY THE ROOT IS OVERRIDABLE ----------------------------------------------
+# authoring.py has replaced `cat > path << 'EOF'` in principle for several
+# commits while being unreachable from a terminal. That gap showed itself the
+# moment it mattered: writing .github/workflows/ci.yml failed with
 #
-# CS1090A_GATE_ROOT was added because a test needed it, and it was worth keeping
-# for a reason the test only revealed indirectly: THE DIRECTORY A GATE RUNS IN
-# AND THE DIRECTORY ITS REPORT LIVES IN ARE DIFFERENT CONCERNS.
+#   zsh: no such file or directory: .github/workflows/ci.yml
 #
-# The subprocess test had to run with the repository as its working directory --
-# the mutated package imports mutmut's trampoline, which loads mutmut's config
-# from the CURRENT DIRECTORY and aborts the entire mutation run if it is
-# elsewhere -- while pointing the report somewhere disposable. Conflating the
-# two made the test either vacuous or fatal.
+# because a redirect creates the FILE and never the DIRECTORY -- one of the four
+# defects author_verbatim was written to remove. A tool that fixes a problem and
+# cannot be invoked when the problem occurs is not a fix.
 #
-# THE SAME SPLIT APPEARS IN CI: a job that collects artifacts into a staging
-# directory, or a monorepo runner invoked from the top while the report sits in
-# a package subdirectory. Path.cwd() remains the default, so nothing changes for
-# the ordinary case.
+# THE PAYLOAD ARRIVES ON STDIN, AND THE SHELL IS NOT THE WRITER. The 2026
+# position is not that heredocs are forbidden; it is that `cat > file` is, while
+# a heredoc feeding an INTERPRETER is explicitly fine. Python performs the
+# write, atomically, with parents created.
+#
+# stdin.buffer, NEVER stdin. Reading text applies an encoding and newline
+# translation, which would defeat the verbatim guarantee at the last step.
+#
+# THE COMMAND THEN JUDGES WHAT IT WROTE. Authoring is not a gate; observing is.
+# The file is read BACK FROM DISK and the Verdict printed as data, so a
+# corrupted transport fails the command rather than passing because `cat`
+# returned zero.
 
 import os
 import sys
 from pathlib import Path
 
-from cs1090a_spec_driven_development.authoring import AuthoringRequest, author_verbatim
+from cs1090a_spec_driven_development.authoring import (
+    AuthoringRequest,
+    author_verbatim,
+    observe_written_file,
+)
 from cs1090a_spec_driven_development.contracts.verdict import Verdict
 from cs1090a_spec_driven_development.mutation import (
     ARTIFACT,
@@ -53,6 +59,10 @@ from cs1090a_spec_driven_development.mutation import (
 
 VERDICT_DIRECTORY = Path(".artifacts/verdicts")
 ROOT_VARIABLE = "CS1090A_GATE_ROOT"
+USAGE = (
+    "usage: python -m cs1090a_spec_driven_development mutants\n"
+    "       python -m cs1090a_spec_driven_development author <path>  # payload on stdin"
+)
 
 
 def gate_root() -> Path:
@@ -61,7 +71,8 @@ def gate_root() -> Path:
     THE WORKING DIRECTORY BY DEFAULT, which is how a developer and CI both
     invoke it from the repository root. The override exists because the
     directory a process must RUN in is not always the directory its artifacts
-    belong in.
+    belong in -- a mutated package must run where mutmut's config is, while its
+    report belongs somewhere disposable.
     """
     override = os.environ.get(ROOT_VARIABLE)
     return Path(override) if override else Path.cwd()
@@ -80,9 +91,9 @@ def verdict_path_for(gate: str) -> Path:
 def record(verdict: Verdict, *, root: Path) -> Path:
     """Write the verdict as data, and return where it went.
 
-    THROUGH author_verbatim, so the gate's own record is produced atomically by
-    the same writer every other file in this repository uses -- and is subject
-    to the same guarantees about partial writes.
+    THROUGH author_verbatim, so a gate's own record is produced atomically by
+    the same writer every other file uses, with the same guarantees about
+    partial writes.
     """
     destination = verdict_path_for(verdict.gate)
     payload = f"{verdict.model_dump_json(indent=2)}\n".encode()
@@ -90,29 +101,68 @@ def record(verdict: Verdict, *, root: Path) -> Path:
     return destination
 
 
-def run_mutation_gate(root: Path) -> int:
-    """Judge the last mutation run, record the verdict, and report an exit code."""
-    verdict = evaluate_mutation_stats(load_mutation_stats(root / ARTIFACT))
-    destination = record(verdict, root=root)
+def report(verdict: Verdict, destination: Path) -> int:
+    """Print the verdict on stdout, the note on stderr, and return the exit code.
 
+    THE STREAM SPLIT IS A CONTRACT. A consumer pipes stdout into jq; the human
+    note must not land in that pipe and corrupt it.
+    """
     print(verdict.model_dump_json(indent=2))
     print(f"\nverdict written to {destination}", file=sys.stderr)
     return verdict.exit_code
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Dispatch to a gate by name.
+def run_mutation_gate(root: Path) -> int:
+    """Judge the last mutation run, record the verdict, and report an exit code."""
+    verdict = evaluate_mutation_stats(load_mutation_stats(root / ARTIFACT))
+    return report(verdict, record(verdict, root=root))
 
-    AN UNKNOWN GATE EXITS 2, NOT 1. Asking for a gate that does not exist is a
-    caller error, not a failing check, and the two must not look alike in CI.
+
+def read_payload() -> bytes:
+    """The bytes to write, taken raw from stdin.
+
+    .buffer BYPASSES THE TEXT LAYER entirely, so no encoding is applied and no
+    newline is translated between the terminal and the file.
     """
+    return sys.stdin.buffer.read()
+
+
+def run_author(path: str, root: Path) -> int:
+    """Write a file from stdin, then judge what landed.
+
+    THE REQUEST IS VALIDATED BEFORE ANYTHING IS TOUCHED. An empty payload or a
+    traversing path raises here, leaving any existing file intact -- which is
+    the guarantee a redirect cannot make, since it truncates the target before
+    the payload arrives.
+    """
+    request = AuthoringRequest(path=Path(path), payload=read_payload())
+    written = author_verbatim(request, root=root)
+    verdict = observe_written_file(written, root=root)
+    return report(verdict, record(verdict, root=root))
+
+
+def usage(arguments: list[str]) -> int:
+    """Report a caller error.
+
+    EXIT 2, NOT 1. Asking for a command that does not exist is a caller error,
+    not a failing check, and the two must not look alike in CI.
+    """
+    print(f"unknown gate: {' '.join(arguments) or '(none)'}", file=sys.stderr)
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Dispatch to a command by name."""
     arguments = sys.argv[1:] if argv is None else argv
+
     if arguments == ["mutants"]:
         return run_mutation_gate(gate_root())
 
-    print(f"unknown gate: {' '.join(arguments) or '(none)'}", file=sys.stderr)
-    print("usage: python -m cs1090a_spec_driven_development mutants", file=sys.stderr)
-    return 2
+    if len(arguments) == 2 and arguments[0] == "author":
+        return run_author(arguments[1], gate_root())
+
+    return usage(arguments)
 
 
 if __name__ == "__main__":
