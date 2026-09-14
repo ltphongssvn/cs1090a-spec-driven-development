@@ -17,10 +17,9 @@
 # nothing, and a setting that enforces nothing is a claim of coverage this
 # repository does not make. flake.lock is the lockfile.
 
-# --- Task interpreter ---------------------------------------------------------
 [task_config]
-# EVERY TASK RUNS INSIDE THE NIX DEVSHELL. Without it `uv`, `opa` and the rest
-# are unresolvable, because nothing puts them on PATH for a task body.
+# EVERY TASK RUNS INSIDE THE NIX DEVSHELL. Without it `uv` and the rest are
+# unresolvable, because nothing puts them on PATH for a task body.
 #
 # THE SHELL IS ALSO PINNED. mise defaults to `sh`, which is bash-in-POSIX-mode
 # on macOS and dash on the Ubuntu runner: same task body, different interpreter,
@@ -44,12 +43,6 @@ description = "Evaluate the flake on every supported platform"
 run = "nix flake check --no-build --all-systems"
 
 # --- Individual gates ---------------------------------------------------------
-#
-# EACH IS ITS OWN TASK so it works standalone during iteration. `check` will
-# later AGGREGATE them via a runner module; it does not replace them, and there
-# is no second copy of the list to drift.
-#
-# EVERY TASK RUNS PYTHON THROUGH uv, NEVER BARE python3.
 
 [tasks.fmt]
 description = "Apply every safe autofix: formatting AND import ordering"
@@ -94,6 +87,54 @@ run = "betterleaks git --redact --no-banner"
 [tasks."check:deps"]
 description = "Scan uv.lock for known vulnerabilities"
 run = "osv-scanner scan source --lockfile uv.lock"
+
+# --- Mutation testing ---------------------------------------------------------
+#
+# ZERO SURVIVORS, ENFORCED RATHER THAN REMEMBERED.
+
+[tasks.mutants]
+description = "Mutate the package and run the suite against every mutant, from scratch"
+# THE SCRATCH TREE IS DELETED FIRST, AND THAT IS A BUG FIX RATHER THAN CAUTION.
+#
+# mutmut CACHES per-mutant results and cannot track behavioural changes in
+# NON-PYTHON files. Editing pyproject.toml or mise.toml leaves every cached
+# verdict in place and prints a warning nobody reads, so the run reports at
+# 0.00 mutations/second and re-tests NOTHING.
+#
+# THIS REPOSITORY ALREADY GOT A WRONG ANSWER FROM IT: a cached run reported 35
+# survivors while a scratch run of the same code reported 7. A gate reading that
+# artifact would have published a number nobody produced -- the same class of
+# defect as a verdict announced by `echo`, one layer further back.
+#
+# THE COST IS THE WHOLE RUN, WHICH IS THE POINT. Mutation testing that reuses
+# yesterday's answer is not measurement.
+run = '''
+set -euo pipefail
+rm -rf mutants
+uv run mutmut run --max-children 4
+uv run mutmut export-cicd-stats
+'''
+
+[tasks."mutants:check"]
+description = "Fail unless the last mutation run killed every mutant"
+# EXIT 2 MEANS THE RUN MEASURED NOTHING, which is neither pass nor fail. See
+# src/cs1090a_spec_driven_development/mutation.py for why that distinction is
+# load-bearing here specifically.
+run = "uv run python -m cs1090a_spec_driven_development mutants"
+
+[tasks."mutants:survivors"]
+description = "Show the diff of every surviving mutant, for review one at a time"
+# THE DIFFS ARE THE POINT, not the count. A survivor is either an assertion
+# worth writing, a line worth deleting, or an equivalent mutant worth
+# refactoring away -- and only the diff distinguishes them.
+run = '''
+set -euo pipefail
+uv run mutmut results \
+  | grep survived \
+  | awk '{print $1}' \
+  | tr -d ':' \
+  | while read -r mutant; do uv run mutmut show "$mutant"; done
+'''
 
 # --- Onboarding ---------------------------------------------------------------
 
@@ -145,8 +186,7 @@ fi
 [tasks."repo:configure"]
 description = "Apply repository settings and branch ruleset (idempotent)"
 # GOVERNANCE AS CODE. Repository settings clicked in a web UI are invisible to
-# the repo, unreviewable and unreproducible -- and the sibling project shipped
-# its first pull request with NO protection and NO required check.
+# the repo, unreviewable and unreproducible.
 #
 # MERGE COMMITS ONLY: GitFlow depends on merge topology, and squashing would
 # collapse commits whose reasoning is the most valuable thing in this history.
@@ -253,14 +293,9 @@ esac
 '''
 
 # --- Worktrees ----------------------------------------------------------------
-# SHELL FOR NOW, DELIBERATELY, AND THIS IS THE ONE PLACE THE REPOSITORY OWES
-# ITSELF A DEBT. These tasks should delegate to a TESTED Python module; they
-# cannot yet, because that module has no failing test to justify it, and writing
-# it first would invert the TDD order this project is built to hold.
-#
-# The shell version is therefore the BOOTSTRAP: enough to cut the first
-# worktree, inside which the tested module gets written and these tasks get
-# repointed at it.
+# SHELL FOR NOW, AND THIS IS THE ONE PLACE THE REPOSITORY OWES ITSELF A DEBT.
+# These tasks should delegate to a TESTED Python module; they cannot yet,
+# because that module has no failing test to justify it.
 #
 # THE ? IN ${usage_slug?} IS THE POINT: bash parameter expansion that FAILS when
 # the variable is unset rather than expanding to empty. Without it a missing
