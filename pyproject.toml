@@ -46,6 +46,25 @@ dev = [
   # never said so, which is exactly the false-positive completion this project
   # exists to make impossible.
   "anyio>=4.6",
+  # PROPERTY-BASED TESTING, ADDED BECAUSE AN EXAMPLE TEST ALREADY FAILED FOR THE
+  # WRONG REASON.
+  #
+  # The first run of tests/test_authoring.py failed on a FIXTURE defect: a
+  # payload headed `# example.py` was written to `pkg/mod.py`, and the gate
+  # correctly refused it. The example test had come to depend on the details of
+  # its fixture data, which is the documented brittleness of example-only
+  # suites.
+  #
+  # Hypothesis removes the dependency by GENERATING the path, so no test can
+  # rely on one particular value. It also shrinks a failure to a minimal
+  # counterexample and replays it deterministically, which turns a flaky report
+  # into a reproducible one.
+  #
+  # SCOPED, NOT UNIVERSAL. The 2026 guidance is roughly 70/30 in favour of
+  # example tests, with property tests concentrated on data transformation,
+  # validation and serialization -- which is exactly what authoring and verdict
+  # are, and is why they get them and the HTTP routes do not.
+  "hypothesis>=6.120",
   # MUTATION TESTING, FROM DAY ONE AND NOT AS A RATCHET.
   #
   # A green suite proves the code RUNS. It does not prove the assertions would
@@ -56,8 +75,7 @@ dev = [
   # ZERO SURVIVORS, NOT A PERCENTAGE FLOOR. A ratchet is the right tool when
   # mutation testing arrives late against thousands of existing mutants. It
   # arrives here on day one against a handful, so the only defensible threshold
-  # is the one that never needs renegotiating. Every survivor is either an
-  # assertion worth writing or a line worth deleting.
+  # is the one that never needs renegotiating.
   #
   # IN THIS DOMAIN IT IS NOT OPTIONAL. A surviving mutant in an eligibility rule
   # is a statute this service can get wrong without any test objecting, and the
@@ -166,8 +184,8 @@ xfail_strict = true
 # nothing.
 #
 # `source_paths`, NOT `paths_to_mutate`. The older key still works and emits a
-# DeprecationWarning -- which is exactly the kind of notice that scrolls past in
-# CI until the key is removed and mutation silently covers nothing.
+# DeprecationWarning -- exactly the kind of notice that scrolls past in CI until
+# the key is removed and mutation silently covers nothing.
 source_paths = ["src/cs1090a_spec_driven_development"]
 
 # THE RUNNER, AND WHY IT CARRIES A PYTHONPATH.
@@ -176,12 +194,7 @@ source_paths = ["src/cs1090a_spec_driven_development"]
 # the working directory. The package is installed EDITABLE, and uv's editable
 # install is a .pth file holding an ABSOLUTE path to the real ./src -- so inside
 # ./mutants, `import cs1090a_spec_driven_development` resolved to the UNMUTATED
-# original. Every test passed against untouched code, and mutmut correctly
-# reported that no test covered any mutant rather than reporting a false green.
-#
-# PYTHONPATH WINS BECAUSE OF ORDERING, NOT PRECEDENCE TRICKS: sys.path takes
-# PYTHONPATH entries before `site` appends .pth entries, so the mutated copy is
-# found first. Verified by importing the module under each configuration and
+# original. Verified by importing the module under each configuration and
 # printing __file__, rather than inferred from the error message.
 #
 # THE INTERPRETER IS THE PARENT'S VENV BY EXPLICIT RELATIVE PATH. Running
@@ -189,7 +202,7 @@ source_paths = ["src/cs1090a_spec_driven_development"]
 # project and BUILD A SECOND VIRTUALENV there -- a different resolution of the
 # same lockfile, which is the drift this repository exists to remove.
 #
-# -x STOPS AT THE FIRST FAILURE, which is correct HERE and nowhere else: a
-# mutant is dead the moment ANY test notices it, so running the rest of the
-# suite buys no information and costs the whole runtime, once per mutant.
+# -x STOPS AT THE FIRST FAILURE, correct HERE and nowhere else: a mutant is dead
+# the moment ANY test notices it, so running the rest of the suite buys no
+# information and costs the whole runtime, once per mutant.
 runner = "PYTHONPATH=src ../.venv/bin/pytest -x -q --no-header"

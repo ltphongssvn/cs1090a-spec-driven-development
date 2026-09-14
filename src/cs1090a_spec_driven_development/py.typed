@@ -1,0 +1,18 @@
+# src/cs1090a_spec_driven_development/py.typed
+# PEP 561 INLINE TYPE MARKER.
+#
+# WITHOUT THIS FILE THIS PACKAGE IS UNTYPED TO EVERY CONSUMER, including our own
+# test suite. mypy resolves an import through src/ while the module exists
+# there, but falls through to the INSTALLED distribution otherwise -- and an
+# installed package with no marker is reported as "missing library stubs or
+# py.typed marker" no matter how completely it is annotated.
+#
+# THE FAILURE IS THEREFORE INTERMITTENT BY CONSTRUCTION, which is why it went
+# unnoticed until a test imported a module that had not been written yet: every
+# other import happened to resolve from source. A consumer installing the wheel
+# would have hit it on the first import.
+#
+# THE FILE'S CONTENT IS IGNORED; only its presence in the package directory
+# matters, and hatchling includes it because it sits inside the package. This
+# comment therefore costs nothing and explains why an apparently empty file is
+# load-bearing.
