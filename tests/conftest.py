@@ -1,25 +1,53 @@
 # tests/conftest.py
-# SHARED TEST BUILDERS AND HELPERS.
+# SHARED TEST BUILDERS, HELPERS, AND PER-PROCESS TEMPORARY ISOLATION.
 #
-# WHY THIS EXISTS. tests/test_fmla_boundaries.py first tried
+# WHY THIS EXISTS AT ALL. tests/test_fmla_boundaries.py first tried
 # `from tests.test_fmla_rules import employee`, which failed: tests/ has no
-# __init__.py and is therefore not a package.
+# __init__.py and is not a package. Making it one would have COUPLED the two
+# modules -- the importer's collection would depend on the imported module's
+# import-time behaviour, its fixtures and its name. conftest.py is pytest's own
+# answer: definitions here reach every test module beneath it without any module
+# importing any other.
 #
-# MAKING IT A PACKAGE WOULD HAVE BEEN THE WRONG FIX. Importing one test module
-# from another couples them -- the importing module's collection now depends on
-# the imported one's import-time behaviour, its fixtures and its name -- and it
-# is how a rename in one file breaks a test in another that never mentioned it.
-# conftest.py is pytest's own answer: definitions here reach every test module
-# beneath it without any module importing any other.
+# --- PER-PROCESS TEMPORARY ISOLATION ------------------------------------------
 #
-# THE BUILDERS ARE FACTORY FIXTURES rather than plain objects, because each test
-# varies ONE fact against a baseline. A shared frozen instance would force every
-# test to reconstruct the whole object to change a single field, and the
-# reconstruction is where a fixture quietly stops resembling the baseline.
+# A MUTATION RUN ABORTED MID-FLIGHT WITH:
+#
+#   FileNotFoundError: .../pytest-of-thanhphongle/pytest-current
+#     in cleanup_dead_symlinks -> left_dir.unlink()
+#
+# NOT A TEST FAILURE AND NOT OUR CODE. pytest derives its base temp directory
+# from tempfile.gettempdir() plus a USER-scoped subdirectory, keeps a
+# `pytest-current` SYMLINK inside it, and garbage-collects stale numbered
+# directories at session end. That structure is shared by every pytest session
+# on the machine.
+#
+# mutmut RUNS FOUR CHILDREN at --max-children 4, each calling pytest.main() in
+# process. Four sessions create, relink and clean up the same symlink
+# concurrently; one unlinks it between another's existence check and its own
+# unlink, and the loser dies.
+#
+# WHY IT MATTERS THOUGH THE RUN FINISHED. That crash landed after the verdict
+# was written. A race has no such manners: the same collision midway leaves a
+# PARTIAL report, and a gate reading a partial report publishes a number nobody
+# produced -- the exact failure the mutation gate exists to prevent, arriving
+# through the back door.
+#
+# ISOLATION RATHER THAN RETRY. Giving each PROCESS its own base temp directory
+# removes the shared resource instead of serialising access to it. Retrying the
+# unlink would paper over a race that also governs the numbered directories.
+#
+# NOT PYTEST_DEBUG_TEMPROOT. It would work, and its name says what it is for.
+# Building reliability on a variable documented as a debug hook is the treadmill
+# -- it can change without notice and nothing would tell us. --basetemp is the
+# supported interface for precisely this.
 
+import os
 import re
+import tempfile
 from collections.abc import Callable
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -35,15 +63,41 @@ from cs1090a_spec_driven_development.contracts.fmla import (
 )
 
 # THE DATE EVERY DETERMINATION IS MEASURED AGAINST. 825.110(d) fixes eligibility
-# as of the date leave is to start, so a single constant keeps every fixture's
+# as of the date leave is to start, so one constant keeps every fixture's
 # arithmetic checkable by hand.
 LEAVE_START = date(2026, 3, 1)
+
+
+def session_basetemp(root: Path, pid: int | None = None) -> Path:
+    """A base temp directory belonging to one process and no other.
+
+    THE PID DEFAULTS rather than being required, because a caller who must
+    remember to pass its own process id is a caller who will one day forget.
+
+    THE NAME AVOIDS pytest-of- AND pytest-current deliberately: reusing either
+    would place us back inside the shared structure this is escaping.
+    """
+    return root / f"pytest-session-{os.getpid() if pid is None else pid}"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Point this session's temporary files at a directory only it uses.
+
+    A HOOK RATHER THAN A FIXTURE, because basetemp is resolved once per session
+    before any fixture runs.
+
+    IT DEFERS TO AN EXPLICIT --basetemp. Someone debugging with a chosen
+    directory means it, and silently overriding them would be worse than the
+    race.
+    """
+    if config.option.basetemp is None:
+        config.option.basetemp = str(session_basetemp(Path(tempfile.gettempdir())))
 
 
 def exactly(message: str) -> str:
     r"""A regex matching the whole string and nothing around it.
 
-    TWO SEPARATE DEFECTS THIS CLOSES, both found by tooling rather than review:
+    TWO DEFECTS THIS CLOSES, both found by tooling rather than review:
 
     UNANCHORED MATCHES ARE SUBSTRING SEARCHES. pytest.raises(match=...) uses
     re.search, so "payload must not be empty" matched mutmut's sentinel-wrapped
@@ -52,7 +106,7 @@ def exactly(message: str) -> str:
 
     UNESCAPED DOTS ARE WILDCARDS. "mutmut-cicd-stats.json" also matches
     "mutmut-cicd-statsXjson", which ruff's RUF043 flags precisely because an
-    assertion that reads as a literal and behaves as a pattern is weaker than it
+    assertion reading as a literal and behaving as a pattern is weaker than it
     looks.
 
     \A AND \Z RATHER THAN ^ AND $, which also match at line boundaries -- a
@@ -65,9 +119,9 @@ def containing(fragment: str) -> str:
     """A regex matching a literal fragment anywhere in the message.
 
     FOR MESSAGES WHOSE FULL TEXT IS NOT OURS TO FIX -- pydantic wraps a
-    ValueError with its own prefix and suffix, and an exception carrying a
-    formatted path varies by machine. The fragment is still ESCAPED, so the only
-    looseness is the one being asked for.
+    ValueError with its own prefix, and an exception carrying a formatted path
+    varies by machine. The fragment is still ESCAPED, so the only looseness is
+    the one being asked for.
     """
     return re.escape(fragment)
 
