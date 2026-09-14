@@ -1,0 +1,158 @@
+# .github/workflows/ci.yml
+# THE QUALITY GATE, AS THE BRANCH RULESET ALREADY REQUIRES IT.
+#
+# THIS FILE WAS THE FIRST WRITTEN BY `python -m ... author`, and the reason is
+# recorded because it is the point of that command: `cat > ci.yml` failed with
+# "no such file or directory", since a redirect creates the FILE and never the
+# DIRECTORY. authoring.py had removed that defect in principle for several
+# commits while being unreachable from a terminal.
+#
+# THE JOB NAME IS PART OF THE CONTRACT. contracts/ruleset-develop-and-main.json
+# requires a status check whose context is exactly "quality gate", so renaming
+# this job silently makes the requirement unsatisfiable and every pull request
+# waits forever on a check that will never report.
+#
+# --- WHY THE STEPS ARE mise TASKS AND NOTHING IS RESTATED HERE ----------------
+#
+# Every command below is `mise run <task>`. Copying a task body into this file
+# would create a second definition that drifts the first time someone fixes one
+# of them -- and CI is the copy nobody edits, so it would be the stale one. The
+# same tasks run on a laptop, which is what makes a local green meaningful.
+#
+# --- WHY CI IS BROADER THAN THE GIT HOOKS -------------------------------------
+#
+# A hook only ever sees the incoming change and --no-verify skips it entirely.
+# CI is the layer where a bypass is caught, which only works if it checks
+# strictly more. The pre-commit hook runs the branch guard, the formatter and
+# the linter in seconds; this runs everything, including the mutation run that
+# takes minutes and the gates that need the network.
+#
+# --- WHY THE MUTATION GATE IS TWO STEPS ---------------------------------------
+#
+# `mutants` produces the report and `mutants:check` judges it. Splitting them
+# means the log shows which one failed: a mutation run that CRASHED and a
+# mutation run that found SURVIVORS are different problems, and a fused step
+# would report both as "the mutation step failed".
+#
+# --- persist-credentials: false, AND WHY zizmor IS RIGHT ----------------------
+#
+# actions/checkout LEAVES THE JOB TOKEN IN .git/config BY DEFAULT. zizmor flags
+# that as credential persistence, and the risk is concrete here rather than
+# theoretical: the last step uploads an artifact directory, and any later change
+# that widened that path -- or any action that reads the repository -- would
+# carry the token with it.
+#
+# NOTHING IN THIS WORKFLOW PUSHES. Every step reads the checkout, so the token
+# has no work to do once the clone exists. Declining to keep it costs nothing
+# and removes a credential from the filesystem for the whole run.
+#
+# --- PINNING ------------------------------------------------------------------
+#
+# EVERY ACTION IS PINNED TO A COMMIT SHA, not a tag. A tag is a mutable pointer
+# its owner can move, so `@v4` means "run whatever that repository contains when
+# the job starts" -- the supply-chain hole flake.lock and uv.lock exist to
+# close, reopened in the file that runs them.
+
+name: ci
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+# LEAST PRIVILEGE, DECLARED AT THE TOP. The default token is read-write on many
+# repositories; this workflow only reads the code it checks.
+permissions:
+  contents: read
+
+# A SUPERSEDED RUN IS CANCELLED. Pushing twice to a pull request otherwise burns
+# a full mutation run on a commit nobody will merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    # THE CONTEXT THE RULESET REQUIRES. Not the job id: GitHub reports the
+    # `name` as the status check context.
+    name: quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out the commit under test
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # THE FULL HISTORY, because check:secrets scans every commit rather
+          # than the tip. A shallow clone would let a credential committed three
+          # commits ago pass unseen.
+          fetch-depth: 0
+          # THE TOKEN IS NOT KEPT. See the header: nothing here pushes, so it
+          # has no work to do once the clone exists.
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3 # v14
+
+      - name: Install mise
+        uses: jdx/mise-action@5083fe46898c414b2475087cc79da59e7da859e8 # v2.1.11
+        with:
+          # NO TOOLS TO INSTALL: mise.toml has no [tools] block by design, and
+          # the flake is the single declaration of the toolchain.
+          install: false
+
+      - name: Trust the task definitions
+        # mise REFUSES AN UNTRUSTED CONFIG, which is correct: a task file is
+        # executable content. On a runner the checkout IS the thing under test,
+        # so trusting it is explicit rather than implied.
+        run: mise trust
+
+      - name: Evaluate the flake on every supported platform
+        run: mise run nix:flake-check
+
+      - name: Install dependencies from the lockfile
+        # --locked IS INSIDE THE TASK. A resolution differing from uv.lock fails
+        # rather than quietly installing something else.
+        run: mise run setup
+
+      - name: Lint
+        run: mise run lint
+
+      - name: Type check
+        run: mise run types
+
+      - name: Test
+        run: mise run test
+
+      - name: Mutate
+        run: mise run mutants
+
+      - name: Require zero surviving mutants
+        run: mise run mutants:check
+
+      - name: Audit this workflow
+        # THE WORKFLOW AUDITS ITSELF. zizmor found the credential-persistence
+        # issue above; running it here means the next such change is caught by
+        # the pipeline rather than by someone remembering to look.
+        run: mise run check:workflow
+
+      - name: Scan the history for credentials
+        run: mise run check:secrets
+
+      - name: Scan dependencies for known vulnerabilities
+        run: mise run check:deps
+
+      - name: Publish the verdicts
+        # ALWAYS, INCLUDING ON FAILURE. The verdicts are most valuable when a
+        # gate failed, and a step that only runs on success publishes evidence
+        # for the case nobody needed it in.
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verdicts
+          path: .artifacts/verdicts/
+          # NOT AN ERROR WHEN ABSENT: an early failure can stop the run before
+          # any gate emits one, and failing the upload would mask the real
+          # cause.
+          if-no-files-found: ignore

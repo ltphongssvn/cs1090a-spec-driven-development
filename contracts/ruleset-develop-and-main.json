@@ -1,0 +1,38 @@
+{
+  "_comment": "contracts/ruleset-develop-and-main.json",
+  "_why": "GOVERNANCE AS CODE. Repository protection clicked into a web UI is invisible to the repository, unreviewable, and unreproducible. Declared here, it is a contract this repo applies to itself via `mise run repo:configure`, and `check:ruleset` reads it back from the server so the claim is verified rather than asserted.",
+  "name": "develop-and-main-protection",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/develop", "refs/heads/main"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "allowed_merge_methods": ["merge"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "quality gate" }
+        ]
+      }
+    }
+  ]
+}

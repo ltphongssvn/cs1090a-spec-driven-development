@@ -1,0 +1,61 @@
+# lefthook.yml
+# Git hooks, committed so they belong to the repo rather than to one laptop.
+#
+# NO VERSIONS OR BINARY PATHS APPEAR HERE. Everything runs through `mise run`,
+# which enters the Nix devShell via task_config -- so this file cannot drift from
+# the toolchain, and a bare command name never resolves against whatever PATH the
+# shell happens to have at that moment.
+#
+# THE STAGING, AND WHY IT IS NOT "RUN EVERYTHING EVERYWHERE"
+#   pre-commit  fast and offline: branch guard, format, lint. Seconds.
+#   pre-push    the offline gate: types, tests, policy, secrets, dependencies.
+#   CI          everything, including the gates that need the network.
+#
+# The hook nobody runs is worse than the slower hook that still catches things.
+# A pre-push that fails on a plane is one people bypass with --no-verify -- at
+# which point it catches nothing at all.
+#
+# CI IS DELIBERATELY BROADER THAN THESE HOOKS, NOT A MIRROR OF THEM. A hook only
+# ever sees the incoming change, and --no-verify skips it entirely. CI is the
+# layer where a bypass is caught, which only works if it checks strictly more.
+#
+# --- WHY THERE IS NO pre-push BLOCK YET ---------------------------------------
+#
+# It belongs here, and its absence is a recorded debt rather than an oversight.
+#
+# The correct pre-push job is `mise run check:offline` -- the SAME gate list as
+# `check`, filtered by a flag each gate declares, so the two cannot drift. That
+# task does not exist yet because the runner it delegates to has no failing test
+# to justify writing it, and writing it first would invert the TDD order this
+# project is built to hold.
+#
+# NAMING INDIVIDUAL GATES HERE IN THE MEANTIME IS THE TEMPTING WRONG MOVE. It
+# would put a second copy of the gate list in this file, which drifts the moment
+# a gate is added to the runner and forgotten here -- and a stale hook list is
+# indistinguishable from a passing one. An absent hook is at least honest.
+#
+# This block lands in the same change that introduces the gate runner.
+#
+# SYNTAX: `jobs:`, not `commands:`. `commands:` is lefthook 1.x; the flake
+# supplies 2.x.
+
+pre-commit:
+  # NOT parallel. The formatter REWRITES files, so it must finish before any
+  # check reads them. Running both at once is a race whose outcome depends on
+  # which process wins.
+  parallel: false
+  jobs:
+    # BRANCH GUARD FIRST, BEFORE ANY WORK. The server ruleset already rejects a
+    # PUSH to develop or main, but by then the commit exists and has to be
+    # unwound. Catching it here keeps recovery to a single `git switch -c`.
+    - name: branch
+      run: mise run start:check
+
+    - name: format
+      run: mise run fmt
+      # Re-stages what the formatter rewrote, so a commit cannot omit its own
+      # formatting fix.
+      stage_fixed: true
+
+    - name: lint
+      run: mise run lint

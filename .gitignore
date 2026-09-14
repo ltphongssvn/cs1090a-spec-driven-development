@@ -43,6 +43,22 @@ htmlcov/
 .hypothesis/
 junit.xml
 
+# MUTATION TESTING SCRATCH TREE.
+#
+# `mutmut run` COPIES the whole project to ./mutants and rewrites the package
+# there into deliberately broken variants. It is build output, not source:
+# regenerated every run, meaningless in a diff, and large.
+#
+# COMMITTING IT WOULD BE ACTIVELY HARMFUL rather than merely noisy -- a reviewer
+# reading mutants/ sees code that is WRONG ON PURPOSE, and a grep across the
+# repository would return the mutated variant beside the real one.
+#
+# mutmut-cicd-stats.json LIVES IN HERE TOO, and stays ignored for the same
+# reason .artifacts/ is: it is the RESULT of one run on one machine, which is
+# evidence-as-data, not source.
+mutants/
+.mutmut-cache
+
 # Type checkers / linters
 .mypy_cache/
 .dmypy.json
@@ -73,6 +89,15 @@ Thumbs.db
 
 # Docker
 .docker/
+
+# EVIDENCE AS DATA, BUT NOT IN GIT.
+#
+# Gate runs emit structured evidence, verdicts and findings here. Those are
+# FACTS ABOUT ONE EXECUTION on one machine at one moment -- the as-data half of
+# the model -- and committing them would turn a record of what happened into a
+# file that gets merged, conflicted, and eventually edited to say something
+# convenient. CI publishes them as build artifacts instead.
+.artifacts/
 
 # Local artifacts
 *.log
