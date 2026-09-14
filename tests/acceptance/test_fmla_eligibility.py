@@ -34,6 +34,9 @@
 from typing import Any
 
 import pytest
+from httpx import ASGITransport, AsyncClient
+
+from cs1090a_spec_driven_development.app import app
 from cs1090a_spec_driven_development.contracts.fmla import (
     Determination,
     EligibilityVerdict,
@@ -44,9 +47,6 @@ from cs1090a_spec_driven_development.contracts.fmla import (
     RuleOutcome,
     ServicememberStatus,
 )
-from httpx import ASGITransport, AsyncClient
-
-from cs1090a_spec_driven_development.app import app
 
 DETERMINATIONS = "/fmla/determinations"
 
