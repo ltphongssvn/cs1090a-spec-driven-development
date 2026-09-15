@@ -224,3 +224,69 @@ class TestRedirections:
 
     def test_stderr_duplication_is_not_an_argument(self) -> None:
         assert commands_in("cmd 2>&1") == [["cmd"]]
+
+
+class TestCommentsInContext:
+    """Comments are removed by their first non-blank character, not by finding a
+    hash anywhere on the line.
+
+    lstrip -> rstrip SURVIVED MUTATION because no fixture indented a comment --
+    and every real task body in this repository indents comments inside a block.
+    rstrip strips only the END of a line, so an indented comment would be handed
+    to bashlex as a command.
+    """
+
+    def test_an_indented_comment_is_removed(self) -> None:
+        body = "uv run ruff check .\n    # a note about the above"
+
+        assert commands_in(body) == [["uv", "run", "ruff", "check", "."]]
+
+    def test_a_deeply_indented_comment_is_removed(self) -> None:
+        body = "if true; then\n        # explaining the branch\n  ls\nfi"
+
+        assert parse_body(body).parses is True
+
+    def test_a_comment_indented_with_a_tab_is_removed(self) -> None:
+        body = "ls\n\t# a tabbed note"
+
+        assert commands_in(body) == [["ls"]]
+
+    def test_a_body_of_only_indented_comments_parses_and_runs_nothing(self) -> None:
+        body = "    # first\n        # second"
+
+        parsed = parse_body(body)
+
+        assert parsed.parses is True
+        assert parsed.commands == []
+
+    def test_a_hash_inside_an_argument_is_not_a_comment(self) -> None:
+        """THE OTHER SIDE OF THE SAME LINE. A hash in quotes is a character, and
+        stripping from it would truncate a real command."""
+        assert commands_in("grep '#define' header.h") == [["grep", "#define", "header.h"]]
+
+
+class TestPipelinesWithNonCommandStages:
+    """Every command stage is collected, even past a stage that is not one.
+
+    continue -> break SURVIVED because no fixture had a pipeline containing a
+    non-command stage. With break, the first such stage abandons the rest -- so
+    a rule asking whether git feeds a parser would simply miss the parser.
+    """
+
+    def test_a_pipeline_reports_every_command_stage(self) -> None:
+        body = "uv run mutmut results | grep survived | awk '{print $1}' | tr -d ':'"
+
+        assert pipelines_in(body) == [["uv", "grep", "awk", "tr"]]
+
+    def test_a_long_pipeline_keeps_its_last_stage(self) -> None:
+        """THE STAGE break WOULD DISCARD FIRST is the one furthest from git, and
+        that is exactly the parser a rule is looking for."""
+        body = "git log --oneline | head -20 | grep fix | wc -l"
+
+        assert pipelines_in(body) == [["git", "head", "grep", "wc"]]
+
+    def test_two_pipelines_in_one_body_are_both_reported(self) -> None:
+        """break WOULD ALSO STOP THE OUTER WALK, losing the second pipeline."""
+        body = "ls | grep a\ncat notes | wc -l"
+
+        assert pipelines_in(body) == [["ls", "grep"], ["cat", "wc"]]

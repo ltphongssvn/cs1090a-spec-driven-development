@@ -93,6 +93,10 @@ class TaskBody(BaseModel):
 
     THE SOURCE TRAVELS WITH THE STRUCTURE so a denial can name what it read.
     Without it a reader must go and find the task to understand the message.
+
+    parses DEFAULTS TO True, so no caller restates it. A construction spelling
+    out a field's own default is a second declaration of one fact, and mutation
+    testing found exactly that by deleting the argument with no effect.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -141,9 +145,19 @@ def argv_of(node: Any) -> list[str]:
     ONLY WORD PARTS. A command node also carries assignments and redirections,
     and treating a redirect as an argument would report a filename where a flag
     belongs -- or report `out.txt` as a command the task runs.
+
+    NO getattr DEFAULTS, AND THAT IS A DELIBERATE LINE. These nodes come from
+    bashlex, which has just parsed them, and every caller has already checked
+    the kind -- they are inside this program's line of defence, where offensive
+    programming says to trust rather than to guard. `getattr` with a default
+    also hides a branch from coverage, which is why four mutants lived in them
+    until mutation testing looked.
+
+    A `[]` FALLBACK WOULD CORRUPT RATHER THAN PROTECT: it reports a task as
+    running no commands at all, and a policy then evaluates a task that does
+    nothing. Returning a default instead of failing is not defence.
     """
-    parts = getattr(node, "parts", [])
-    return [part.word for part in parts if getattr(part, "kind", None) == WORD]
+    return [part.word for part in node.parts if part.kind == WORD]
 
 
 def read_commands(trees: list[Any]) -> list[list[str]]:
@@ -171,9 +185,7 @@ def read_pipelines(trees: list[Any]) -> list[list[str]]:
             if node.kind != PIPELINE:
                 continue
             stages = [
-                argv_of(part)[0]
-                for part in node.parts
-                if getattr(part, "kind", None) == COMMAND and argv_of(part)
+                argv_of(part)[0] for part in node.parts if part.kind == COMMAND and argv_of(part)
             ]
             if stages:
                 found.append(stages)
@@ -193,7 +205,7 @@ def parse_body(run: str) -> TaskBody:
     except Exception as error:
         return TaskBody(run=run, parses=False, parse_error=f"{type(error).__name__}: {error}")
 
-    return TaskBody(run=run, parses=True, commands=commands, pipelines=pipelines)
+    return TaskBody(run=run, commands=commands, pipelines=pipelines)
 
 
 def commands_in(run: str) -> list[list[str]]:
