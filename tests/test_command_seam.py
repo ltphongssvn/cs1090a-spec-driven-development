@@ -203,3 +203,65 @@ class TestTheDefaultRunner:
 
         assert result.returncode == 0
         assert result.stdout.startswith("git version")
+
+
+class TestWhatAFailureCarries:
+    """A CalledProcessError is the only account of why a tool failed.
+
+    MUTATION TESTING FOUND ITS PAYLOAD BLANKABLE: returncode, output and stderr
+    could each become None with every existing assertion still passing. An
+    exception carrying no diagnostics fires exactly when the reader has nothing
+    else to go on.
+    """
+
+    def test_the_error_carries_the_exit_code(self) -> None:
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            run_command(CommandRequest(argv=["opa"]), runner=echoing(returncode=2))
+
+        assert raised.value.returncode == 2
+
+    def test_the_error_carries_what_the_tool_printed(self) -> None:
+        """STDOUT OFTEN HOLDS THE REASON even on failure -- a parse error, a
+        usage message, a partial result."""
+        runner = echoing(returncode=1, stdout="partial output")
+
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            run_command(CommandRequest(argv=["opa"]), runner=runner)
+
+        assert raised.value.output == "partial output"
+
+    def test_the_error_carries_the_diagnostics(self) -> None:
+        runner = echoing(returncode=1, stderr="rego_parse_error")
+
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            run_command(CommandRequest(argv=["opa"]), runner=runner)
+
+        assert raised.value.stderr == "rego_parse_error"
+
+    def test_every_field_survives_together(self) -> None:
+        """EACH MUTATED INDEPENDENTLY, so all three are asserted in one failure
+        rather than trusting three cases to cover the set between them."""
+        runner = echoing(returncode=3, stdout="out", stderr="err")
+
+        with pytest.raises(subprocess.CalledProcessError) as raised:
+            run_command(CommandRequest(argv=["opa", "eval"]), runner=runner)
+
+        assert (raised.value.returncode, raised.value.output, raised.value.stderr) == (
+            3,
+            "out",
+            "err",
+        )
+
+    def test_a_tolerated_failure_carries_the_same_facts(self) -> None:
+        """THE NON-RAISING PATH REPORTS THE SAME THINGS, so a caller reading the
+        result is no worse informed than one catching the error."""
+        result = run_command(
+            CommandRequest(argv=["git"], tolerate_failure=True),
+            runner=echoing(returncode=128, stdout="out", stderr="not a repository"),
+        )
+
+        assert (result.returncode, result.stdout, result.stderr) == (
+            128,
+            "out",
+            "not a repository",
+        )

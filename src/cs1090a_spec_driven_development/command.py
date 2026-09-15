@@ -154,10 +154,16 @@ def run_command(request: CommandRequest, runner: Runner | None = None) -> Comman
         timeout_seconds=request.timeout_seconds,
     )
 
+    # NO `or ""` HERE, AND THAT IS DELIBERATE. CPython documents stdout and
+    # stderr as None only when output was NOT captured; system_runner always
+    # captures, and the Runner protocol promises CompletedProcess[str]. Guarding
+    # against None would be defending against a state the contract forbids --
+    # code no test can reach without fabricating an illegal value, which is how
+    # the speculative branch in shell.walk came to survive eleven mutants.
     result = CommandResult(
         returncode=completed.returncode,
-        stdout=completed.stdout or "",
-        stderr=completed.stderr or "",
+        stdout=completed.stdout,
+        stderr=completed.stderr,
     )
 
     # THE SEAM RAISES; IT DOES NOT ASK THE RUNNER TO. Passing check=True would

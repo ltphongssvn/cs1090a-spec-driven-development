@@ -40,6 +40,7 @@ from cs1090a_spec_driven_development.git_topology import (
 from cs1090a_spec_driven_development.policy import PolicyInput
 from cs1090a_spec_driven_development.policy_gate import (
     POLICY_DIRECTORY,
+    build_verdict,
     evaluate_policies,
     read_decision,
     require_policies,
@@ -275,3 +276,113 @@ class TestThisRepository:
         about itself -- which is exactly the signal the gate exists to give.
         """
         assert run_policy_gate(repository_root(), policies=policies()) == 0
+
+
+class TestEvidenceFields:
+    """The values a record carries, not merely the verdict it reaches.
+
+    MUTATION TESTING FOUND ALL OF THESE BLANKABLE. A verdict that says FAIL
+    without saying what failed, or PASS without saying what was examined, is the
+    console output this project replaced with documents.
+    """
+
+    def test_a_violation_check_states_what_was_expected(self) -> None:
+        verdict = build_verdict(CLEAN, [TOOLS_BLOCK_DENIAL])
+        failing = [check for check in verdict.checks if check.verdict is CheckVerdict.FAIL]
+
+        assert failing[0].expected == "no violation"
+
+    def test_a_violation_check_carries_the_denial_as_observed(self) -> None:
+        """THE DENIAL IS THE OBSERVATION. Without it the record says something
+        failed and not what -- which costs the reader the investigation."""
+        verdict = build_verdict(CLEAN, [TOOLS_BLOCK_DENIAL])
+        failing = [check for check in verdict.checks if check.verdict is CheckVerdict.FAIL]
+
+        assert failing[0].observed == TOOLS_BLOCK_DENIAL
+
+    def test_each_violation_becomes_its_own_check(self) -> None:
+        """ONE CHECK PER VIOLATION, so the record is queryable rather than a
+        paragraph. A single check carrying a joined string would make the count
+        unreadable without parsing prose."""
+        verdict = build_verdict(CLEAN, ["first denial", "second denial"])
+        failing = [check for check in verdict.checks if check.verdict is CheckVerdict.FAIL]
+
+        assert [check.observed for check in failing] == ["first denial", "second denial"]
+
+    def test_violation_ids_are_distinct_and_ordered(self) -> None:
+        """CHECK IDS MUST BE UNIQUE WITHIN A VERDICT -- the contract enforces it
+        -- and two violations are two facts rather than one repeated."""
+        verdict = build_verdict(CLEAN, ["first denial", "second denial"])
+        failing = [check.id for check in verdict.checks if check.verdict is CheckVerdict.FAIL]
+
+        assert failing == ["policy_violation_0", "policy_violation_1"]
+
+    def test_the_conformance_check_reports_zero_against_zero(self) -> None:
+        """observed AND expected, both of which mutated to None and survived."""
+        verdict = build_verdict(CLEAN, [])
+        passing = [check for check in verdict.checks if check.verdict is CheckVerdict.PASS]
+
+        assert (passing[0].observed, passing[0].expected) == (0, 0)
+
+    def test_the_conformance_check_is_named(self) -> None:
+        verdict = build_verdict(CLEAN, [])
+        passing = [check.id for check in verdict.checks if check.verdict is CheckVerdict.PASS]
+
+        assert passing == ["no_policy_violations"]
+
+    def test_a_failing_verdict_carries_no_conformance_check(self) -> None:
+        """A RECORD CLAIMING BOTH WOULD CONTRADICT ITSELF: the gate cannot have
+        found no violations and also listed one."""
+        verdict = build_verdict(CLEAN, ["a denial"])
+
+        assert "no_policy_violations" not in [check.id for check in verdict.checks]
+
+    def test_a_passing_verdict_carries_exactly_one_deciding_check(self) -> None:
+        """WITHOUT A DECIDING CHECK the contract derives UNKNOWN -- right for a
+        gate that measured nothing, wrong for one that examined the repository
+        and found it clean."""
+        verdict = build_verdict(CLEAN, [])
+        deciding = [
+            check.id for check in verdict.checks if check.verdict is not CheckVerdict.INFORMATIONAL
+        ]
+
+        assert deciding == ["no_policy_violations"]
+
+    def test_the_context_counts_come_from_the_document(self) -> None:
+        """THE ANTI-VACUITY EVIDENCE. Zero violations over zero tasks is not the
+        same fact as zero violations over twenty-five, and a reader must be able
+        to tell them apart without re-running the gate."""
+        verdict = build_verdict(CLEAN, [])
+        context = {
+            check.id: check.observed
+            for check in verdict.checks
+            if check.verdict is CheckVerdict.INFORMATIONAL
+        }
+
+        assert context == {
+            "tasks_evaluated": len(CLEAN.tasks),
+            "workflow_actions_evaluated": len(CLEAN.workflow_actions),
+            "required_contexts_evaluated": len(CLEAN.required_contexts),
+        }
+
+    def test_the_context_counts_are_present_on_a_failing_verdict_too(self) -> None:
+        """EVIDENCE MATTERS MOST WHEN THE GATE FAILED, so the counts must not be
+        reserved for the passing case."""
+        verdict = build_verdict(CLEAN, ["a denial"])
+        context = {
+            check.id for check in verdict.checks if check.verdict is CheckVerdict.INFORMATIONAL
+        }
+
+        assert context == {
+            "tasks_evaluated",
+            "workflow_actions_evaluated",
+            "required_contexts_evaluated",
+        }
+
+    def test_the_verdict_names_the_gate_and_its_subject(self) -> None:
+        """A RECORD THAT DOES NOT SAY WHAT IT JUDGED cannot be filed beside the
+        others, and this repository now writes one file per gate."""
+        verdict = build_verdict(CLEAN, [])
+
+        assert verdict.gate == "repository_policy"
+        assert verdict.subject == "repository configuration"
