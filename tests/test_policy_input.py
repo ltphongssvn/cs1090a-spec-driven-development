@@ -52,7 +52,6 @@ from cs1090a_spec_driven_development.policy import (
     PolicyInput,
     gather_policy_input,
     read_ci_job_names,
-    read_required_contexts,
     read_tasks,
     read_workflow_actions,
 )
@@ -190,21 +189,6 @@ class TestReadWorkflow:
         reusable = "jobs:\n  call:\n    uses: org/repo/.github/workflows/x.yml@abc\n"
 
         assert read_workflow_actions(yaml.safe_load(reusable)) == []
-
-
-class TestReadRequiredContexts:
-    def test_every_required_check_is_gathered(self) -> None:
-        assert read_required_contexts(json.loads(RULESET)) == ["quality gate"]
-
-    def test_a_ruleset_without_status_checks_requires_nothing(self) -> None:
-        """A RULESET MAY PROTECT WITHOUT REQUIRING A CHECK -- deletion and
-        non-fast-forward rules carry no contexts, and reading them as though
-        they did would crash on a missing key.
-        """
-        assert read_required_contexts({"rules": [{"type": "deletion"}]}) == []
-
-    def test_an_empty_ruleset_requires_nothing(self) -> None:
-        assert read_required_contexts({}) == []
 
 
 class TestGatherPolicyInput:

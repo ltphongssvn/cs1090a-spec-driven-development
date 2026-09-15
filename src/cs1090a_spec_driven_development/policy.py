@@ -43,7 +43,6 @@
 # than an exception. A gate that crashes reports "broken" where it should report
 # "nothing to object to", and those have different remedies.
 
-import json
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -51,13 +50,15 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from cs1090a_spec_driven_development.contracts.ruleset import (
+    Ruleset,
+    required_contexts_of,
+)
 from cs1090a_spec_driven_development.shell import TaskBody, parse_body
 
 MISE_FILE = Path("mise.toml")
 WORKFLOW_FILE = Path(".github/workflows/ci.yml")
 RULESET_FILE = Path("contracts/ruleset-develop-and-main.json")
-
-STATUS_CHECK_RULE = "required_status_checks"
 
 
 class PolicyInput(BaseModel):
@@ -104,11 +105,20 @@ def read_yaml(path: Path) -> dict[str, Any]:
     return loaded if isinstance(loaded, dict) else {}
 
 
-def read_json(path: Path) -> dict[str, Any]:
+def read_ruleset(path: Path) -> Ruleset:
+    """Parse the branch ruleset, or report an empty one when absent.
+
+    model_validate_json RATHER THAN model_validate(json.loads(...)), which is
+    pydantic's documented preference: the JSON is validated internally instead
+    of being parsed into a dict first and validated after.
+
+    ABSENCE IS AN EMPTY RULESET, NOT AN ERROR. A repository may legitimately
+    have none, and a gate that crashes there reports "broken" where it should
+    report "nothing to object to".
+    """
     if not path.is_file():
-        return {}
-    loaded = json.loads(path.read_text())
-    return loaded if isinstance(loaded, dict) else {}
+        return Ruleset()
+    return Ruleset.model_validate_json(path.read_text())
 
 
 def read_tasks(mise: dict[str, Any]) -> dict[str, TaskBody]:
@@ -166,23 +176,6 @@ def read_workflow_actions(workflow: dict[str, Any]) -> list[str]:
     return references
 
 
-def read_required_contexts(ruleset: dict[str, Any]) -> list[str]:
-    """The status checks the branch ruleset demands.
-
-    A RULESET MAY PROTECT WITHOUT REQUIRING A CHECK: deletion and
-    non-fast-forward rules carry no contexts, so the parameters are read only
-    from the rule that has them.
-    """
-    contexts: list[str] = []
-    for rule in ruleset.get("rules", []):
-        if not isinstance(rule, dict) or rule.get("type") != STATUS_CHECK_RULE:
-            continue
-        for check in rule.get("parameters", {}).get(STATUS_CHECK_RULE, []):
-            if isinstance(check, dict) and "context" in check:
-                contexts.append(check["context"])
-    return contexts
-
-
 def gather_policy_input(root: Path) -> PolicyInput:
     """Read the repository's configuration into one document.
 
@@ -192,12 +185,12 @@ def gather_policy_input(root: Path) -> PolicyInput:
     """
     mise = read_toml(root / MISE_FILE)
     workflow = read_yaml(root / WORKFLOW_FILE)
-    ruleset = read_json(root / RULESET_FILE)
+    ruleset = read_ruleset(root / RULESET_FILE)
 
     return PolicyInput(
         tasks=read_tasks(mise),
         ci_job_names=read_ci_job_names(workflow),
-        required_contexts=read_required_contexts(ruleset),
+        required_contexts=required_contexts_of(ruleset),
         workflow_actions=read_workflow_actions(workflow),
         has_tools_block=has_tools_block(mise),
     )
