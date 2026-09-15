@@ -119,18 +119,18 @@ def failing(verdict: Verdict) -> list[str]:
 class TestEvaluation:
     def test_a_conforming_document_is_allowed(self) -> None:
         """THE REAL ENGINE, THE REAL POLICIES, A CONFORMING DOCUMENT."""
-        assert evaluate_policies(CLEAN, policies=policies()) == []
+        assert evaluate_policies(CLEAN) == []
 
     def test_a_tools_block_is_denied_by_the_real_engine(self) -> None:
         """END TO END: a gathered fact reaches Rego and returns as prose."""
         offending = CLEAN.model_copy(update={"has_tools_block": True})
 
-        assert evaluate_policies(offending, policies=policies()) == [TOOLS_BLOCK_DENIAL]
+        assert evaluate_policies(offending) == [TOOLS_BLOCK_DENIAL]
 
     def test_an_unpinned_action_is_denied(self) -> None:
         offending = CLEAN.model_copy(update={"workflow_actions": ["actions/checkout@v4"]})
 
-        decision = evaluate_policies(offending, policies=policies())
+        decision = evaluate_policies(offending)
 
         assert decision == ["action 'actions/checkout@v4' is not pinned to a commit sha"]
 
@@ -146,7 +146,7 @@ class TestEvaluation:
             }
         )
 
-        assert len(evaluate_policies(offending, policies=policies())) == 3
+        assert len(evaluate_policies(offending)) == 3
 
     def test_the_decision_is_sorted_for_a_stable_record(self) -> None:
         """A REGO SET HAS NO ORDER. Emitting it unsorted makes the recorded
@@ -155,7 +155,7 @@ class TestEvaluation:
         """
         offending = CLEAN.model_copy(update={"workflow_actions": ["z/z@v1", "a/a@v1"]})
 
-        decision = evaluate_policies(offending, policies=policies())
+        decision = evaluate_policies(offending)
 
         assert decision == sorted(decision)
         assert len(decision) == 2
@@ -169,7 +169,7 @@ class TestRefusals:
         measurement twice.
         """
         with pytest.raises(FileNotFoundError, match="no policies found"):
-            evaluate_policies(CLEAN, policies=tmp_path / "absent")
+            require_policies(tmp_path / "absent")
 
     def test_a_directory_with_no_rego_files_is_refused(self, tmp_path: Path) -> None:
         """EXISTING IS NOT THE SAME AS CONTAINING POLICIES."""
@@ -226,10 +226,10 @@ class TestDecisionParsing:
 
 class TestVerdict:
     def test_a_conforming_repository_exits_zero(self, tmp_path: Path) -> None:
-        assert run_policy_gate(tmp_path, policies=policies()) == 0
+        assert run_policy_gate(tmp_path) == 0
 
     def test_the_verdict_is_recorded_as_data(self, tmp_path: Path) -> None:
-        run_policy_gate(tmp_path, policies=policies())
+        run_policy_gate(tmp_path)
 
         recorded = verdict_at(tmp_path)
 
@@ -240,12 +240,12 @@ class TestVerdict:
         """A REPOSITORY WITH A [tools] BLOCK, evaluated where it actually is."""
         (tmp_path / "mise.toml").write_text('[tools]\npython = "3.12"\n')
 
-        assert run_policy_gate(tmp_path, policies=policies()) == 1
+        assert run_policy_gate(tmp_path) == 1
 
     def test_a_violation_is_named_in_the_record(self, tmp_path: Path) -> None:
         (tmp_path / "mise.toml").write_text('[tools]\npython = "3.12"\n')
 
-        run_policy_gate(tmp_path, policies=policies())
+        run_policy_gate(tmp_path)
         recorded = verdict_at(tmp_path)
 
         assert recorded.verdict is GateVerdict.FAIL
@@ -258,7 +258,7 @@ class TestVerdict:
         """
         (tmp_path / "mise.toml").write_text('[tools]\npython = "3.12"\n')
 
-        run_policy_gate(tmp_path, policies=policies())
+        run_policy_gate(tmp_path)
 
         assert failing(verdict_at(tmp_path)) == [TOOLS_BLOCK_DENIAL]
 
@@ -268,7 +268,7 @@ class TestVerdict:
         nothing and wrong for one that evaluated the repository and found it
         clean.
         """
-        run_policy_gate(tmp_path, policies=policies())
+        run_policy_gate(tmp_path)
         recorded = verdict_at(tmp_path)
         deciding = [
             check.id for check in recorded.checks if check.verdict is not CheckVerdict.INFORMATIONAL
@@ -281,7 +281,7 @@ class TestVerdict:
         same fact as zero violations over twenty-five, and a reader must be able
         to tell them apart without re-running the gate.
         """
-        run_policy_gate(tmp_path, policies=policies())
+        run_policy_gate(tmp_path)
 
         assert informational(verdict_at(tmp_path)) == {
             "tasks_evaluated": 0,
@@ -293,7 +293,7 @@ class TestVerdict:
         """THE SAME GATE OVER THE REAL TREE records non-zero counts, which is
         what distinguishes it from the empty-directory case above.
         """
-        run_policy_gate(repository_root(), policies=policies())
+        run_policy_gate(repository_root())
         counts = informational(verdict_at(repository_root()))
 
         assert counts["tasks_evaluated"] != 0
@@ -309,7 +309,7 @@ class TestThisRepository:
         ruleset. If this fails, the repository has violated a rule it published
         about itself -- which is exactly the signal the gate exists to give.
         """
-        assert run_policy_gate(repository_root(), policies=policies()) == 0
+        assert run_policy_gate(repository_root()) == 0
 
 
 class TestEvidenceFields:
@@ -420,3 +420,77 @@ class TestEvidenceFields:
 
         assert verdict.gate == "repository_policy"
         assert verdict.subject == "repository configuration"
+
+
+class TestPolicyDiscovery:
+    """How policies are found in a container, and why the order is guaranteed.
+
+    FOUR MUTANTS SURVIVED HERE against the real directory, because it holds two
+    files whose names the filesystem happens to return in sorted order and
+    nothing else. A sort is unobservable over already-sorted input, and a
+    suffix filter is unobservable when everything present matches it.
+    """
+
+    def test_files_are_returned_in_name_order(self, tmp_path: Path) -> None:
+        """WRITTEN IN REVERSE, so the sort is what produces the order rather
+        than the filesystem happening to agree with it.
+
+        This also kills `sorted(found)` without a key: Traversable defines no
+        ordering, so comparing two of them raises -- and only unsorted input
+        forces the comparison.
+        """
+        for name in ("zebra.rego", "alpha.rego", "middle.rego"):
+            (tmp_path / name).write_text("package x\n")
+
+        assert [entry.name for entry in rego_files(tmp_path)] == [
+            "alpha.rego",
+            "middle.rego",
+            "zebra.rego",
+        ]
+
+    def test_files_in_subdirectories_are_found(self, tmp_path: Path) -> None:
+        """THE LAYOUT THIS REPOSITORY USES: one directory per policy package."""
+        nested = tmp_path / "repository"
+        nested.mkdir()
+        (nested / "rules.rego").write_text("package x\n")
+
+        assert [entry.name for entry in rego_files(tmp_path)] == ["rules.rego"]
+
+    def test_files_that_are_not_policies_are_ignored(self, tmp_path: Path) -> None:
+        """THE SUFFIX FILTER, made observable by something that fails it.
+
+        `endswith(None)` raises and `append(None)` poisons the list -- but only
+        when a non-policy file is present to be filtered, which the real
+        directory does not contain.
+        """
+        (tmp_path / "rules.rego").write_text("package x\n")
+        (tmp_path / "README.md").write_text("notes\n")
+        (tmp_path / "data.json").write_text("{}\n")
+
+        assert [entry.name for entry in rego_files(tmp_path)] == ["rules.rego"]
+
+    def test_a_non_policy_in_a_subdirectory_is_ignored(self, tmp_path: Path) -> None:
+        nested = tmp_path / "repository"
+        nested.mkdir()
+        (nested / "rules.rego").write_text("package x\n")
+        (nested / "notes.txt").write_text("notes\n")
+
+        assert [entry.name for entry in rego_files(tmp_path)] == ["rules.rego"]
+
+    def test_a_container_with_no_policies_yields_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "README.md").write_text("notes\n")
+
+        assert rego_files(tmp_path) == []
+
+    def test_policies_at_both_levels_are_returned_together_in_order(self, tmp_path: Path) -> None:
+        """THE TWO BRANCHES COMBINE, and the sort spans both -- so a nested file
+        sorting before a top-level one must come first."""
+        (tmp_path / "zebra.rego").write_text("package x\n")
+        nested = tmp_path / "repository"
+        nested.mkdir()
+        (nested / "alpha.rego").write_text("package x\n")
+
+        assert [entry.name for entry in rego_files(tmp_path)] == [
+            "alpha.rego",
+            "zebra.rego",
+        ]

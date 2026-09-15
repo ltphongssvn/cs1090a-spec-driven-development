@@ -122,7 +122,7 @@ def require_policies(policies: Traversable) -> Traversable:
     return policies
 
 
-def evaluate_policies(document: PolicyInput, *, policies: Traversable | None = None) -> list[str]:
+def evaluate_policies(document: PolicyInput) -> list[str]:
     """Ask OPA what this document violates, and return the violations sorted.
 
     as_file MATERIALISES THE POLICIES FOR THE CALL. `opa eval --data` takes a
@@ -134,7 +134,7 @@ def evaluate_policies(document: PolicyInput, *, policies: Traversable | None = N
     recorded verdict differ between runs over identical input, destroying the
     diffability the record exists for.
     """
-    located = require_policies(default_policies() if policies is None else policies)
+    located = require_policies(default_policies())
 
     with resources.as_file(located) as directory:
         result = run_command(
@@ -245,11 +245,21 @@ def build_verdict(document: PolicyInput, violations: list[str]) -> Verdict:
     )
 
 
-def run_policy_gate(root: Path, *, policies: Traversable | None = None) -> int:
-    """Gather, evaluate, record, and report an exit code."""
+def run_policy_gate(root: Path) -> int:
+    """Gather, evaluate, record, and report an exit code.
+
+    NO policies PARAMETER, AND ITS REMOVAL IS THE FIX RATHER THAN A TIDY-UP.
+    Mutation testing replaced the forwarded argument with None and nothing
+    objected -- because None resolved, through the import system, to exactly
+    what every caller was passing. A parameter always given the same value is
+    speculative generality, and eliminating it is the documented remedy.
+
+    IT ALSO CLOSES A REAL HOLE: while the parameter existed, a caller could
+    point this gate at policies nobody intended it to enforce.
+    """
     from cs1090a_spec_driven_development.__main__ import record, report
 
     document = gather_policy_input(root)
-    verdict = build_verdict(document, evaluate_policies(document, policies=policies))
+    verdict = build_verdict(document, evaluate_policies(document))
 
     return report(verdict, record(verdict, root=root))
