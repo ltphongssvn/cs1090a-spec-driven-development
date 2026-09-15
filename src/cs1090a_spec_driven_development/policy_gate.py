@@ -45,12 +45,15 @@
 # green over an empty measurement twice -- zero mutants, and zero tests -- and
 # the third occurrence is refused at the door.
 
-import json
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
 from cs1090a_spec_driven_development.command import CommandRequest, run_command
+from cs1090a_spec_driven_development.contracts.decision import (
+    DecisionEnvelope,
+    denials_of,
+)
 from cs1090a_spec_driven_development.contracts.verdict import (
     Check,
     CheckVerdict,
@@ -164,15 +167,20 @@ def evaluate_policies(document: PolicyInput) -> list[str]:
 def read_decision(output: str) -> list[str]:
     """Pull the deny set out of OPA's result envelope.
 
-    AN UNDEFINED RESULT IS AN EMPTY DECISION, NOT AN ERROR. OPA omits the
-    `result` key entirely when a query is undefined, and for a partial set rule
-    that simply means nothing was denied.
+    PARSED THROUGH A CONTRACT rather than navigated by hand. The previous body
+    used one guarded `.get("result", [])` followed by three unguarded subscripts
+    -- two mutants lived in the guard, and the subscripts had no guard at all,
+    so one function disagreed with itself about how far to trust the document.
+
+    AN UNDEFINED RESULT IS AN EMPTY DECISION, NOT AN ERROR. opa omits the
+    `result` key entirely for an undefined query -- measured, not assumed -- and
+    for a partial set rule that means nothing was denied. The contract expresses
+    that as a default rather than as a lookup.
+
+    model_validate_json, NOT model_validate(json.loads(...)): pydantic validates
+    the JSON internally instead of building a dict first and checking it after.
     """
-    document = json.loads(output)
-    results = document.get("result", [])
-    if not results:
-        return []
-    return list(results[0]["expressions"][0]["value"])
+    return denials_of(DecisionEnvelope.model_validate_json(output))
 
 
 def violation_check(message: str, index: int) -> Check:

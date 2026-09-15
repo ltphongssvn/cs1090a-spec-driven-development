@@ -50,6 +50,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from cs1090a_spec_driven_development.contracts.mise import MiseConfiguration
 from cs1090a_spec_driven_development.contracts.ruleset import (
     Ruleset,
     required_contexts_of,
@@ -132,12 +133,8 @@ def read_tasks(mise: dict[str, Any]) -> dict[str, TaskBody]:
     verdict, a future report -- sees the same structure rather than each
     re-deriving it from text and disagreeing.
     """
-    tasks = mise.get("tasks", {})
-    return {
-        name: parse_body(str(body.get("run", "")))
-        for name, body in tasks.items()
-        if isinstance(body, dict)
-    }
+    configuration = MiseConfiguration.model_validate(mise)
+    return {name: parse_body(task.run) for name, task in configuration.tasks.items()}
 
 
 def has_tools_block(mise: dict[str, Any]) -> bool:
@@ -146,7 +143,7 @@ def has_tools_block(mise: dict[str, Any]) -> bool:
     THE FACT THE POLICY ASKS FOR, not the file it lives in. A Rego rule cannot
     read TOML, so the question is answered here.
     """
-    return "tools" in mise
+    return MiseConfiguration.model_validate(mise).tools is not None
 
 
 def read_ci_job_names(workflow: dict[str, Any]) -> list[str]:

@@ -359,3 +359,68 @@ class TestThePolicyCommand:
         }
 
         assert context["tasks_evaluated"] == 0
+
+
+class TestThePolicyCommandInProcess:
+    """The same dispatch, called directly so mutation testing can see it.
+
+    mutmut RECORDS COVERAGE IN PROCESS. A child launched by subprocess.run is
+    invisible to the trampoline, so TestThePolicyCommand above proves the real
+    `python -m ... policy` path works and kills nothing -- three mutants lived
+    in the dispatch while every one of those tests passed.
+
+    THE BOUNDARY IS THE POINT, not a workaround. Proving the wiring and
+    measuring the logic are different jobs, and this repository needs both: the
+    subprocess tests caught two genuine defects when written, and only these can
+    be held to the zero-survivor rule.
+    """
+
+    def test_the_policy_command_is_dispatched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """THE LITERAL "policy", matched in process.
+
+        chdir rather than an explicit root, because this also exercises
+        gate_root() -- the argument a mutant replaced with None.
+        """
+        monkeypatch.chdir(tmp_path)
+
+        assert main(["policy"]) == 0
+
+    def test_an_uppercase_policy_name_is_refused(self) -> None:
+        """COMMAND NAMES ARE CASE-SENSITIVE, so a typo is not a command."""
+        assert main(["POLICY"]) == 2
+
+    def test_a_sentinel_wrapped_name_is_refused(self) -> None:
+        """THE XX MUTANT'S SHAPE, refused explicitly: a name that merely
+        CONTAINS the command is not the command."""
+        assert main(["XXpolicyXX"]) == 2
+
+    def test_a_padded_policy_name_is_refused(self) -> None:
+        assert main([" policy "]) == 2
+
+    def test_the_gate_reads_the_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gate_root() MUTATED TO None AND SURVIVED. An empty directory must
+        report zero tasks rather than the repository's own twenty-five.
+        """
+        monkeypatch.chdir(tmp_path)
+        main(["policy"])
+
+        recorded = json.loads((tmp_path / ".artifacts/verdicts/repository_policy.json").read_text())
+        context = {
+            check["id"]: check["observed"]
+            for check in recorded["checks"]
+            if check["verdict"] == "informational"
+        }
+
+        assert context["tasks_evaluated"] == 0
+
+    def test_the_verdict_is_written_where_the_root_says(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        main(["policy"])
+
+        assert (tmp_path / ".artifacts/verdicts/repository_policy.json").is_file()
