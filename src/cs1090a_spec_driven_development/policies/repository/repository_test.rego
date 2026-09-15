@@ -1,4 +1,4 @@
-# policies/repository/repository_test.rego
+# src/cs1090a_spec_driven_development/policies/repository/repository_test.rego
 # THE TESTS FOR THIS REPOSITORY'S OWN POLICIES.
 #
 # --- THE FIXTURES CARRY STRUCTURE, NOT SHELL TEXT -----------------------------

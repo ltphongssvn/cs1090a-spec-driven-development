@@ -112,12 +112,18 @@ description = "Format, check, lint and unit-test every Rego policy"
 #
 # --strict TURNS WARNINGS INTO ERRORS, so an unused import or shadowed variable
 # fails here rather than being read past.
+# THE POLICIES LIVE INSIDE THE PACKAGE, and that is not an arrangement of
+# convenience. Run-time data belongs in the package because data installed
+# elsewhere has no reliable retrieval facility -- and the gate reads them
+# through importlib.resources, which answers wherever the package can be
+# imported: from a worktree, from mutmut's scratch copy, from an installed
+# wheel, even from a zip.
 run = '''
 set -euo pipefail
-opa fmt --fail --diff policies/
-opa check --strict policies/
-regal lint policies/
-opa test policies/ --fail-on-empty
+opa fmt --fail --diff src/cs1090a_spec_driven_development/policies/
+opa check --strict src/cs1090a_spec_driven_development/policies/
+regal lint src/cs1090a_spec_driven_development/policies/
+opa test src/cs1090a_spec_driven_development/policies/ --fail-on-empty
 '''
 
 [tasks."check:policy-decisions"]

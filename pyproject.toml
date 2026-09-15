@@ -175,6 +175,13 @@ markers = [
 # -m not integration the default run is HERMETIC, so it can sit behind a hook.
 addopts = ["--strict-markers", "--strict-config", "-ra", "-m", "not integration"]
 
+# A WARNING IS A FAILURE. pydantic's documented failure mode for a mishandled
+# callable discriminator is a warning DURING SERIALISATION -- which a passing
+# test swallows, leaving a ruleset that silently stopped requiring anything. The
+# same applies to every deprecation this project has not yet acted on: silence
+# is how a delayed fuse stays lit.
+filterwarnings = ["error"]
+
 # An xfail that PASSES is a failure. Otherwise a fixed bug leaves its xfail in
 # place forever and the suite reports success for a test asserting nothing.
 xfail_strict = true

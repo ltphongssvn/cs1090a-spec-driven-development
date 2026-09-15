@@ -25,6 +25,7 @@
 # it is JSON with the keys this test happens to read. A record that no longer
 # satisfies its own contract now fails here rather than being read as a dict.
 
+from importlib.resources.abc import Traversable
 from pathlib import Path
 
 import pytest
@@ -39,10 +40,11 @@ from cs1090a_spec_driven_development.git_topology import (
 )
 from cs1090a_spec_driven_development.policy import PolicyInput
 from cs1090a_spec_driven_development.policy_gate import (
-    POLICY_DIRECTORY,
     build_verdict,
+    default_policies,
     evaluate_policies,
     read_decision,
+    rego_files,
     require_policies,
     run_policy_gate,
 )
@@ -80,8 +82,15 @@ def repository_root() -> Path:
     return git_repository_root()
 
 
-def policies() -> Path:
-    return repository_root() / POLICY_DIRECTORY
+def policies() -> Traversable:
+    """The real policies, found the way the gate itself finds them.
+
+    NO PATH ARITHMETIC HERE EITHER. This helper once joined POLICY_DIRECTORY to
+    a git-derived root, which is the locating problem in miniature -- in a file
+    whose subject is a gate that had just been fixed for it. Policies live
+    inside the package now, so the import system answers for every caller.
+    """
+    return default_policies()
 
 
 def verdict_at(root: Path) -> Verdict:
@@ -169,8 +178,33 @@ class TestRefusals:
         with pytest.raises(FileNotFoundError, match="without evaluating anything"):
             require_policies(tmp_path / "policies")
 
-    def test_a_directory_holding_policies_is_accepted(self) -> None:
-        assert require_policies(policies()) == policies()
+    def test_a_container_holding_policies_is_accepted(self) -> None:
+        """RETURNED UNCHANGED, asserted by what it NAMES rather than by identity.
+
+        resources.files() yields a MultiplexedPath, which defines no __eq__, so
+        two objects naming the same directory compare unequal. The original
+        assertion read as "the same policies come back" and meant "the same
+        object comes back" -- a fact about caching, not about this function.
+        """
+        accepted = require_policies(policies())
+
+        assert str(accepted) == str(policies())
+
+    def test_an_accepted_container_holds_the_policies_the_gate_will_load(self) -> None:
+        """THE CLAIM BEHIND THE REFUSAL. require_policies exists to guarantee
+        the engine is handed something to evaluate, so the test asserts that
+        something is there rather than that a reference was passed through.
+
+        THE ORDER IS ASSERTED BECAUSE rego_files GUARANTEES IT. Filesystem
+        enumeration order differs between APFS and ext4, so the guarantee lives
+        in the source and this test is what holds it there.
+        """
+        accepted = require_policies(policies())
+
+        assert [entry.name for entry in rego_files(accepted)] == [
+            "repository.rego",
+            "repository_test.rego",
+        ]
 
 
 class TestDecisionParsing:

@@ -46,6 +46,8 @@
 # the third occurrence is refused at the door.
 
 import json
+from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 
 from cs1090a_spec_driven_development.command import CommandRequest, run_command
@@ -58,54 +60,103 @@ from cs1090a_spec_driven_development.executables import resolve
 from cs1090a_spec_driven_development.policy import PolicyInput, gather_policy_input
 
 GATE = "repository_policy"
-POLICY_DIRECTORY = Path("policies")
+POLICY_PACKAGE = "cs1090a_spec_driven_development.policies"
 DECISION_QUERY = "data.repository.deny"
 EVALUATION_TIMEOUT_SECONDS = 60
+REGO_SUFFIX = ".rego"
 
 
-def require_policies(policies: Path) -> Path:
-    """Refuse to evaluate against a directory with no policies in it.
+def default_policies() -> Traversable:
+    """Where this repository's policies live, found through the import system.
+
+    NOT A PATH RESOLVED AGAINST A WORKING DIRECTORY, which is what three earlier
+    attempts amounted to. Path(__file__) arithmetic resolves to the main clone
+    when run from a worktree; pytest's rootpath follows the configfile, so
+    mutmut's scratch copy answers with itself; and git rev-parse is right only
+    while a working tree exists, which stops being true the moment this package
+    is installed as a wheel.
+
+    importlib.resources ASKS THE IMPORT SYSTEM, so the answer holds wherever the
+    package can be imported -- including from a zip, where no file path would
+    work at all. PyPA recommends exactly this for run-time data, because data
+    installed outside a package has no reliable retrieval facility.
+    """
+    return resources.files(POLICY_PACKAGE)
+
+
+def rego_files(policies: Traversable) -> list[Traversable]:
+    """Every policy file beneath a container, in a deterministic order.
+
+    A Traversable HAS NO rglob. It offers iterdir and nothing more, which is the
+    price of working inside a zip -- and one level down is all this layout
+    needs, since each package of policies is its own directory.
+
+    SORTED, AND NOT FOR TIDINESS. Filesystem enumeration order is not a
+    processing order: APFS on macOS reports insertion order and ext4 on Linux
+    reports inode order, so an unsorted answer differs between a laptop and the
+    runner. This repository has already been bitten by exactly that divergence
+    once, when ruff classified imports differently on the two machines, and the
+    established remedy is to sort at the source rather than to stop depending on
+    the order downstream.
+    """
+    found: list[Traversable] = []
+    for entry in policies.iterdir():
+        if entry.is_dir():
+            found.extend(child for child in entry.iterdir() if child.name.endswith(REGO_SUFFIX))
+        elif entry.name.endswith(REGO_SUFFIX):
+            found.append(entry)
+    return sorted(found, key=lambda entry: entry.name)
+
+
+def require_policies(policies: Traversable) -> Traversable:
+    """Refuse to evaluate against a container with no policies in it.
 
     THE VACUITY REFUSAL. An engine loaded with nothing denies nothing, and a
     gate reporting "no violations" over zero rules is the failure this project
-    keeps finding in new tools.
+    keeps meeting in new tools.
     """
-    if not policies.is_dir() or not list(policies.rglob("*.rego")):
+    if not policies.is_dir() or not rego_files(policies):
         raise FileNotFoundError(
             f"no policies found under {policies}: the gate would pass without evaluating anything"
         )
     return policies
 
 
-def evaluate_policies(document: PolicyInput, *, policies: Path) -> list[str]:
+def evaluate_policies(document: PolicyInput, *, policies: Traversable | None = None) -> list[str]:
     """Ask OPA what this document violates, and return the violations sorted.
 
-    SORTED, BECAUSE A REGO SET HAS NO ORDER. Emitting it unsorted makes the
-    recorded verdict differ between runs over identical input, which destroys
-    the diffability the record exists for.
-    """
-    require_policies(policies)
+    as_file MATERIALISES THE POLICIES FOR THE CALL. `opa eval --data` takes a
+    filesystem path, and a Traversable need not be one; as_file provides a real
+    path for the duration and removes it afterwards, which is how package data
+    is handed to an external process.
 
-    result = run_command(
-        CommandRequest(
-            argv=[
-                resolve("opa"),
-                "eval",
-                "--data",
-                str(policies),
-                "--stdin-input",
-                "--format",
-                "json",
-                DECISION_QUERY,
-            ],
-            stdin=document.model_dump_json(),
-            timeout_seconds=EVALUATION_TIMEOUT_SECONDS,
-            # FAIL CLOSED, DELIBERATELY. `opa eval` exits zero whether or not
-            # the policies deny anything, so a non-zero exit means the ENGINE
-            # failed. Tolerating it would let a broken engine report no
-            # violations -- a gate passing because it could not run.
+    SORTED, BECAUSE A REGO SET HAS NO ORDER. Emitting it unsorted makes the
+    recorded verdict differ between runs over identical input, destroying the
+    diffability the record exists for.
+    """
+    located = require_policies(default_policies() if policies is None else policies)
+
+    with resources.as_file(located) as directory:
+        result = run_command(
+            CommandRequest(
+                argv=[
+                    resolve("opa"),
+                    "eval",
+                    "--data",
+                    str(directory),
+                    "--stdin-input",
+                    "--format",
+                    "json",
+                    DECISION_QUERY,
+                ],
+                stdin=document.model_dump_json(),
+                timeout_seconds=EVALUATION_TIMEOUT_SECONDS,
+                # FAIL CLOSED, DELIBERATELY. `opa eval` exits zero whether or
+                # not the policies deny anything, so a non-zero exit means the
+                # ENGINE failed. Tolerating it would let a broken engine report
+                # no violations -- a gate passing because it could not run.
+            )
         )
-    )
 
     return sorted(read_decision(result.stdout))
 
@@ -194,7 +245,7 @@ def build_verdict(document: PolicyInput, violations: list[str]) -> Verdict:
     )
 
 
-def run_policy_gate(root: Path, *, policies: Path = POLICY_DIRECTORY) -> int:
+def run_policy_gate(root: Path, *, policies: Traversable | None = None) -> int:
     """Gather, evaluate, record, and report an exit code."""
     from cs1090a_spec_driven_development.__main__ import record, report
 

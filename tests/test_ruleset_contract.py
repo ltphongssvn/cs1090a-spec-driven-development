@@ -43,8 +43,12 @@ import pytest
 from pydantic import ValidationError
 
 from cs1090a_spec_driven_development.contracts.ruleset import (
+    UNKNOWN_RULE,
+    OtherRule,
     Ruleset,
+    StatusCheckRule,
     required_contexts_of,
+    rule_tag,
 )
 
 REAL = """
@@ -204,3 +208,69 @@ class TestTheContract:
         """A REPOSITORY MAY HAVE NO RULESET, and the gatherer must still produce
         something evaluable rather than an exception."""
         assert Ruleset().rules == []
+
+
+class TestSerialisation:
+    """A discriminator runs in BOTH directions, and only one was tested.
+
+    pydantic USES CALLABLE DISCRIMINATORS FOR SERIALISATION, handing them a
+    model instance rather than a mapping. Its documentation is explicit that
+    failing to account for both yields warnings when dumping and runtime errors
+    when validating -- so the branch is required, and untested it held three
+    mutants including one reading the wrong attribute name entirely.
+
+    THE ROUND TRIP IS THE SANCTIONED CHECK: dump, reparse, compare.
+    """
+
+    def test_a_parsed_ruleset_round_trips(self) -> None:
+        original = Ruleset.model_validate_json(REAL)
+
+        restored = Ruleset.model_validate_json(original.model_dump_json())
+
+        assert required_contexts_of(restored) == required_contexts_of(original)
+
+    def test_the_status_check_rule_survives_the_round_trip(self) -> None:
+        """THE STRICT ARM SPECIFICALLY. If the discriminator misread a model's
+        tag, this rule would return as the catch-all and its contexts would
+        vanish -- a ruleset that silently stopped requiring anything.
+        """
+        original = Ruleset.model_validate_json(REAL)
+
+        restored = Ruleset.model_validate_json(original.model_dump_json())
+        strict = [rule for rule in restored.rules if isinstance(rule, StatusCheckRule)]
+
+        assert len(strict) == 1
+        assert strict[0].parameters.required_status_checks[0].context == "quality gate"
+
+    def test_the_other_rules_survive_the_round_trip(self) -> None:
+        original = Ruleset.model_validate_json(REAL)
+
+        restored = Ruleset.model_validate_json(original.model_dump_json())
+        others = [rule for rule in restored.rules if isinstance(rule, OtherRule)]
+
+        assert sorted(rule.type for rule in others) == ["deletion", "non_fast_forward"]
+
+    def test_the_tag_is_read_from_a_model_instance(self) -> None:
+        """THE SERIALISATION BRANCH, CALLED DIRECTLY."""
+        rule = StatusCheckRule.model_validate(
+            {
+                "type": "required_status_checks",
+                "parameters": {"required_status_checks": [{"context": "quality gate"}]},
+            }
+        )
+
+        assert rule_tag(rule) == "required_status_checks"
+
+    def test_the_tag_of_an_unknown_model_is_the_catch_all(self) -> None:
+        assert rule_tag(OtherRule(type="deletion")) == UNKNOWN_RULE
+
+    def test_the_tag_is_read_from_a_mapping(self) -> None:
+        """THE VALIDATION BRANCH, for symmetry: a test covering one direction is
+        not a test of the other."""
+        assert rule_tag({"type": "required_status_checks"}) == "required_status_checks"
+
+    def test_a_value_that_is_neither_falls_to_the_catch_all(self) -> None:
+        """A BARE SCALAR WHERE A RULE BELONGS routes to the catch-all, which
+        refuses it -- rather than raising inside the discriminator, where the
+        error would name nothing useful."""
+        assert rule_tag(7) == UNKNOWN_RULE

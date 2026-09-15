@@ -302,3 +302,60 @@ class TestRecordFormatting:
         )
 
         assert printed == written
+
+
+class TestThePolicyCommand:
+    """The `policy` gate, reached the way production reaches it.
+
+    THREE MUTANTS LIVED HERE because every test called run_policy_gate directly:
+    the command name could be uppercased or sentinel-wrapped, and the root could
+    be replaced with None. The same gap let sys.argv[1:] survive earlier in this
+    branch -- the path production takes was the one path nothing walked.
+    """
+
+    def test_the_command_runs_and_exits_zero_on_a_conforming_repository(
+        self, tmp_path: Path
+    ) -> None:
+        """A REAL SUBPROCESS, REAL ARGV, REAL WORKING DIRECTORY."""
+        completed = run_module("policy", report_root=tmp_path)
+
+        assert completed.returncode == 0, completed.stderr
+
+    def test_the_command_writes_its_verdict(self, tmp_path: Path) -> None:
+        run_module("policy", report_root=tmp_path)
+
+        assert (tmp_path / ".artifacts/verdicts/repository_policy.json").is_file()
+
+    def test_the_verdict_reaches_stdout_as_json(self, tmp_path: Path) -> None:
+        completed = run_module("policy", report_root=tmp_path)
+
+        assert json.loads(completed.stdout)["gate"] == "repository_policy"
+
+    def test_the_command_name_is_matched_exactly(self, tmp_path: Path) -> None:
+        """COMMAND NAMES ARE CASE-SENSITIVE. A runner accepting either spelling
+        accepts a typo as a command."""
+        completed = run_module("POLICY", report_root=tmp_path)
+
+        assert completed.returncode == 2
+        assert completed.stderr.splitlines()[0] == "unknown gate: POLICY"
+
+    def test_the_usage_line_offers_the_policy_command(self, tmp_path: Path) -> None:
+        """A COMMAND ABSENT FROM THE USAGE IS A COMMAND NOBODY FINDS."""
+        completed = run_module(report_root=tmp_path)
+
+        assert any("policy" in line for line in completed.stderr.splitlines())
+
+    def test_the_gate_reads_the_root_it_was_given(self, tmp_path: Path) -> None:
+        """gate_root() MUTATED TO None AND SURVIVED. The verdict lands where the
+        root says, so pointing at an empty directory must report zero tasks
+        rather than the repository's twenty-five.
+        """
+        run_module("policy", report_root=tmp_path)
+        recorded = json.loads((tmp_path / ".artifacts/verdicts/repository_policy.json").read_text())
+        context = {
+            check["id"]: check["observed"]
+            for check in recorded["checks"]
+            if check["verdict"] == "informational"
+        }
+
+        assert context["tasks_evaluated"] == 0

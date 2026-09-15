@@ -1,4 +1,4 @@
-# policies/repository/repository.rego
+# src/cs1090a_spec_driven_development/policies/repository/repository.rego
 # THIS REPOSITORY'S INVARIANTS, AS EXECUTABLE POLICY.
 #
 # WHAT THIS EXPRESSES THAT NO OTHER GATE CAN. ruff checks Python, mypy checks
