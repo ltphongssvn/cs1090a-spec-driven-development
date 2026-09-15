@@ -57,11 +57,11 @@
 # refusal naming the directory that was examined.
 
 import os
-import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, DirectoryPath
 
+from cs1090a_spec_driven_development.command import CommandRequest, run_command
 from cs1090a_spec_driven_development.executables import resolve
 
 ROOT_VARIABLE = "CS1090A_GATE_ROOT"
@@ -109,18 +109,21 @@ def ask_git(start: Path) -> list[str]:
     the caller is standing outside a repository, and the two deserve different
     messages.
     """
-    completed = subprocess.run(  # noqa: S603
-        [resolve("git"), "-C", str(start), "rev-parse", *DISCOVERY_ARGUMENTS],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=DISCOVERY_TIMEOUT_SECONDS,
+    result = run_command(
+        CommandRequest(
+            argv=[resolve("git"), "-C", str(start), "rev-parse", *DISCOVERY_ARGUMENTS],
+            timeout_seconds=DISCOVERY_TIMEOUT_SECONDS,
+            # "NOT A REPOSITORY" IS AN ANSWER, not a crash: it is a fact about
+            # where the caller is standing, and reporting it as
+            # CalledProcessError would describe a broken tool instead.
+            tolerate_failure=True,
+        )
     )
 
-    if completed.returncode != 0:
+    if result.returncode != 0:
         raise FileNotFoundError(f"{start} is not inside a git repository")
 
-    return completed.stdout.split("\n")
+    return result.stdout.split("\n")
 
 
 def absolute(answer: str, relative_to: Path) -> Path:

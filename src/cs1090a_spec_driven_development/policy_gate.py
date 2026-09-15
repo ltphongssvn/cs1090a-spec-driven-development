@@ -46,9 +46,9 @@
 # the third occurrence is refused at the door.
 
 import json
-import subprocess
 from pathlib import Path
 
+from cs1090a_spec_driven_development.command import CommandRequest, run_command
 from cs1090a_spec_driven_development.contracts.verdict import (
     Check,
     CheckVerdict,
@@ -86,25 +86,28 @@ def evaluate_policies(document: PolicyInput, *, policies: Path) -> list[str]:
     """
     require_policies(policies)
 
-    completed = subprocess.run(  # noqa: S603
-        [
-            resolve("opa"),
-            "eval",
-            "--data",
-            str(policies),
-            "--stdin-input",
-            "--format",
-            "json",
-            DECISION_QUERY,
-        ],
-        input=document.model_dump_json(),
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=EVALUATION_TIMEOUT_SECONDS,
+    result = run_command(
+        CommandRequest(
+            argv=[
+                resolve("opa"),
+                "eval",
+                "--data",
+                str(policies),
+                "--stdin-input",
+                "--format",
+                "json",
+                DECISION_QUERY,
+            ],
+            stdin=document.model_dump_json(),
+            timeout_seconds=EVALUATION_TIMEOUT_SECONDS,
+            # FAIL CLOSED, DELIBERATELY. `opa eval` exits zero whether or not
+            # the policies deny anything, so a non-zero exit means the ENGINE
+            # failed. Tolerating it would let a broken engine report no
+            # violations -- a gate passing because it could not run.
+        )
     )
 
-    return sorted(read_decision(completed.stdout))
+    return sorted(read_decision(result.stdout))
 
 
 def read_decision(output: str) -> list[str]:
