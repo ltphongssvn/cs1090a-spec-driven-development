@@ -3,25 +3,13 @@
 name = "cs1090a-spec-driven-development"
 version = "0.1.0"
 description = "Statutory leave and absence compliance, built spec-first: the statute is the specification, the determination is evidence"
-# MUST MATCH .python-version. One fact, declared twice, drifts; the env-parity
+# MUST MATCH .python-version. One fact declared twice drifts; the env-parity
 # gate enforces the link so a mismatch fails a check rather than surfacing as a
 # confusing runtime error weeks later.
 requires-python = "==3.12.3"
 
 # CONTRACT-FIRST, AND THESE ARE RUNTIME DEPENDENCIES RATHER THAN DEV TOOLS,
 # because the contracts execute inside the service, not only in the test suite.
-#
-#   pydantic    the project's single source of type truth. Every boundary --
-#               HTTP request, HTTP response, statute specification, emitted
-#               determination -- is a pydantic model first, and the
-#               implementation is written against the model.
-#   fastapi     chosen BECAUSE it derives its OpenAPI document from the pydantic
-#               models rather than from a hand-written YAML file. That makes the
-#               published contract a FUNCTION of the types: it cannot drift from
-#               the implementation, because it is generated from it.
-#
-# NOTHING ELSE YET. Dependencies are added when a RED test demands them, not in
-# anticipation.
 dependencies = [
   "pydantic>=2.10",
   "fastapi>=0.115",
@@ -36,30 +24,43 @@ dev = [
   # httpx's ASGI transport issues a request WITHOUT binding a socket, so the
   # acceptance tests are hermetic and can sit behind a git hook.
   "httpx>=0.28",
-  # THE ASYNC TEST RUNNER. httpx's AsyncClient returns coroutines and pytest
-  # does not await them: without a plugin an `async def` test is COLLECTED,
+  # THE ASYNC TEST RUNNER. Without a plugin an `async def` test is COLLECTED,
   # SKIPPED WITH A WARNING, AND REPORTED AS PASSING -- a test that never ran and
   # never said so.
   "anyio>=4.6",
   # PROPERTY-BASED TESTING, added because an example test failed for the wrong
   # reason: a fixture defect the suite could not distinguish from a code defect.
-  # Hypothesis removes the dependence on particular fixture values by generating
-  # them, and shrinks a failure to a minimal reproducible counterexample.
   "hypothesis>=6.120",
-  # MUTATION TESTING, FROM DAY ONE AND NOT AS A RATCHET.
-  #
-  # A green suite proves the code RUNS. It does not prove the assertions would
-  # NOTICE if the code were wrong. In this domain that is not academic: a
-  # surviving mutant in an eligibility rule is a statute this service can get
-  # wrong with no test objecting, and the party who finds out is a regulator.
+  # MUTATION TESTING, FROM DAY ONE AND NOT AS A RATCHET. A green suite proves
+  # the code RUNS; it does not prove the assertions would NOTICE if the code
+  # were wrong. A surviving mutant in an eligibility rule is a statute this
+  # service can get wrong with no test objecting.
   "mutmut>=3.2",
-  # THE WORKFLOW AUDIT'S OWN PARSER. check:workflow runs zizmor, but asserting
-  # that ci.yml declares the context the branch ruleset requires needs the file
-  # read as data rather than grepped.
+  # THE POLICY GATE READS THE WORKFLOW AS DATA. Asserting that ci.yml declares
+  # the context the branch ruleset requires needs the file parsed, not grepped.
   "pyyaml>=6.0",
-  # AMBIENT PROCESS STATE, MADE A VALIDATED SNAPSHOT. SecretStr also renders as
-  # ********** when printed, which is a stronger guarantee than remembering not
-  # to print a credential.
+  "types-PyYAML>=6.0",
+  # A REAL BASH PARSER, AND THE REASON IS MEASURED RATHER THAN PREFERRED.
+  #
+  # The policy gate must know what a task body actually does. Three cheaper
+  # approaches were tried and rejected against the real mise.toml:
+  #
+  #   substring matching      denied `setup` for a `git` on one line and a
+  #                           `| grep` thirty lines away
+  #   per-line correlation    still substring matching; quoted text and
+  #                           `;`-separated commands defeat it next
+  #   shlex tokenising        16 lines raised, and nested substitution was torn
+  #                           apart: root="$(cd "$(dirname "$common")" && pwd)"
+  #                           became ['root=$(cd $', '(', 'dirname', ...]
+  #
+  # bashlex is a transliteration of GNU bash's own parser and yields a real AST.
+  # It reads 19 of this repository's 25 task bodies; the 6 it cannot read are
+  # exactly the tasks carrying shell logic, which is the finding that set the
+  # rest of this branch's direction.
+  "bashlex>=0.18",
+  # AMBIENT PROCESS STATE, MADE A VALIDATED SNAPSHOT. SecretStr renders as
+  # ********** when printed, which is stronger than remembering not to print a
+  # credential.
   "pydantic-settings>=2.6",
 ]
 
@@ -87,18 +88,10 @@ extend-exclude = ["mutants"]
 select = ["E", "F", "I", "N", "UP", "B", "S", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-# THE PACKAGE IS NAMED EXPLICITLY, AND CI IS WHY.
-#
-# `src = ["src", "tests"]` locates first-party code by PATH, which works on a
-# machine where the package is installed editable and the source tree is
-# present. On the runner, ruff classified
-# `cs1090a_spec_driven_development.contracts.fmla` as THIRD-PARTY while
-# `cs1090a_spec_driven_development.app` came out FIRST-PARTY -- one import block
-# split in two, I001 on CI and silence locally.
-#
-# A LINT THAT DISAGREES WITH ITSELF ACROSS MACHINES IS WORSE THAN NO LINT: the
-# formatter rewrites imports one way here and CI demands another, and neither
-# side can see the other's answer. Naming the package removes the inference.
+# THE PACKAGE IS NAMED EXPLICITLY, AND CI IS WHY. Locating first-party code by
+# PATH works where the package is installed editable beside its source; on the
+# runner ruff split one import block in two, failing I001 there and passing
+# here. A lint that disagrees with itself across machines is worse than none.
 known-first-party = ["cs1090a_spec_driven_development"]
 
 [tool.ruff.lint.per-file-ignores]
@@ -115,17 +108,22 @@ strict = true
 # reports the mutations, not defects.
 exclude = ["mutants/.*"]
 
+# THE PYDANTIC PLUGIN, WHICH strict = true DOES NOT REPLACE.
+#
+# Every contract in this repository is a pydantic model, and without the plugin
+# mypy types `Model(...)` as accepting **Any: a wrong field name, a missing
+# required field or a wrong type at a CONSTRUCTION SITE goes unreported and
+# surfaces as a ValidationError at runtime instead.
+#
+# THE PLUGIN ALSO SEES WHAT PYDANTIC DOES AT RUNTIME. Nested models auto-parse
+# from dicts, so `PolicyInput(tasks={"lint": {"run": "..."}})` WORKS while being
+# a different shape from what the field declares -- convenient, and precisely
+# the silent drift that let three test fixtures keep subscripting a TaskBody
+# like a dictionary after the contract changed underneath them.
+plugins = ["pydantic.mypy"]
+
 # --- Fail closed --------------------------------------------------------------
 # strict = true is not the ceiling. These turn silence into failure.
-#
-# warn_unused_configs   a section matching no file is a config that stopped
-#                       applying when something moved.
-# warn_unreachable      unreachable code is either dead or a wrong type guard.
-# ignore-without-code   a bare `# type: ignore` suppresses EVERY error on that
-#                       line, including ones added later.
-# possibly-undefined    a name assigned only inside a branch, read outside it.
-# redundant-expr        a condition always true or always false, which is how a
-#                       rule ends up dead while its tests still pass.
 warn_unused_configs = true
 warn_unreachable = true
 enable_error_code = [
@@ -134,6 +132,32 @@ enable_error_code = [
   "redundant-expr",
   "truthy-bool",
 ]
+
+[tool.pydantic-mypy]
+# THE PLUGIN'S OWN FAIL-CLOSED SETTINGS, each turning a runtime surprise into a
+# type error:
+#
+#   init_forbid_extra    a keyword no field accepts is a typo, and pydantic
+#                        would raise only when the line is reached
+#   init_typed           a wrongly-typed argument is caught at the call site
+#                        rather than by validation
+#   warn_required_...    a dynamic alias hides whether a field is required, so
+#                        the plugin cannot check the constructor at all
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# bashlex SHIPS NO STUBS AND NO py.typed MARKER, so strict mode reports an error
+# per import for a library whose types are not this project's concern. A blanket
+# ignore_errors would hide real problems in our own code; this is scoped to the
+# one module, and shell.py annotates the boundary so nothing downstream sees Any.
+#
+# NOTE THE CONTRAST WITH pyyaml: types-PyYAML EXISTS and is a dev dependency, so
+# yaml needs no override. An override where a stub package exists would be
+# choosing to go untyped.
+[[tool.mypy.overrides]]
+module = ["bashlex.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -145,14 +169,10 @@ markers = [
 ]
 
 # --- Fail closed --------------------------------------------------------------
-# --strict-markers   a typo'd marker is an ERROR, not a silently-created new
-#                    one. Without it @pytest.mark.acceptence runs in the default
-#                    suite forever and nobody notices.
+# --strict-markers   a typo'd marker is an ERROR, not a silently-created one.
 # --strict-config    an unknown ini key is an error rather than ignored.
-# -ra                report the reason for every non-passing outcome. A skip
-#                    nobody sees is a test that stopped running.
-# -m not integration the default run is HERMETIC, so it can sit behind a git
-#                    hook. A hook needing credentials is a hook people bypass.
+# -ra                report the reason for every non-passing outcome.
+# -m not integration the default run is HERMETIC, so it can sit behind a hook.
 addopts = ["--strict-markers", "--strict-config", "-ra", "-m", "not integration"]
 
 # An xfail that PASSES is a failure. Otherwise a fixed bug leaves its xfail in
@@ -161,24 +181,15 @@ xfail_strict = true
 
 [tool.mutmut]
 # WHAT GETS MUTATED: the shipped package only. NOT tests/ -- mutating a test
-# produces mutants trivially "killed" by the mutated test failing itself, which
-# inflates the score while measuring nothing.
+# produces mutants trivially "killed" by the mutated test failing itself.
 #
-# `source_paths`, NOT `paths_to_mutate`. The older key still works and emits a
-# DeprecationWarning -- exactly the kind of notice that scrolls past in CI until
-# the key is removed and mutation silently covers nothing.
+# `source_paths`, NOT `paths_to_mutate`. The older key emits a
+# DeprecationWarning that scrolls past in CI until the key is removed and
+# mutation silently covers nothing.
 source_paths = ["src/cs1090a_spec_driven_development"]
 
-# THE RUNNER, AND WHY IT CARRIES A PYTHONPATH.
-#
-# mutmut COPIES the tree to ./mutants and runs the suite from there. The package
-# is installed EDITABLE, and uv's editable install is a .pth file holding an
-# ABSOLUTE path to the real ./src -- so inside ./mutants,
-# `import cs1090a_spec_driven_development` resolved to the UNMUTATED original.
-# Verified by importing the module under each configuration and printing
-# __file__, rather than inferred from the error message.
-#
-# -x STOPS AT THE FIRST FAILURE, correct HERE and nowhere else: a mutant is dead
-# the moment ANY test notices it, so running the rest of the suite buys no
-# information and costs the whole runtime, once per mutant.
+# THE RUNNER CARRIES A PYTHONPATH because mutmut copies the tree to ./mutants
+# and runs there, while uv's editable install is a .pth holding an ABSOLUTE path
+# to the real ./src -- so imports resolved to the UNMUTATED original. Verified
+# by printing __file__ under each configuration rather than inferred.
 runner = "PYTHONPATH=src ../.venv/bin/pytest -x -q --no-header"

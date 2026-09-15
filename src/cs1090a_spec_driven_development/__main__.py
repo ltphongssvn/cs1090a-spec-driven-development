@@ -18,28 +18,27 @@
 #
 # --- WHY `author` EXISTS ------------------------------------------------------
 #
-# authoring.py has replaced `cat > path << 'EOF'` in principle for several
-# commits while being unreachable from a terminal. That gap showed itself the
-# moment it mattered: writing .github/workflows/ci.yml failed with
+# authoring.py replaced `cat > path << 'EOF'` in principle for several commits
+# while being unreachable from a terminal. The gap showed itself the moment it
+# mattered: writing .github/workflows/ci.yml failed with "no such file or
+# directory", because a redirect creates the FILE and never the DIRECTORY.
 #
-#   zsh: no such file or directory: .github/workflows/ci.yml
+# THE PAYLOAD ARRIVES ON STDIN, AND THE SHELL IS NOT THE WRITER. A heredoc
+# feeding an INTERPRETER is fine; `cat > file` is the thing 2026 tooling blocks.
+# Python performs the write, atomically, with parents created -- then reads the
+# file BACK and judges it, so a corrupted transport fails the command rather
+# than passing because `cat` returned zero.
 #
-# because a redirect creates the FILE and never the DIRECTORY -- one of the four
-# defects author_verbatim was written to remove. A tool that fixes a problem and
-# cannot be invoked when the problem occurs is not a fix.
+# --- WHY `policy` IS HERE, AND WHY ITS ABSENCE WENT UNNOTICED -----------------
 #
-# THE PAYLOAD ARRIVES ON STDIN, AND THE SHELL IS NOT THE WRITER. The 2026
-# position is not that heredocs are forbidden; it is that `cat > file` is, while
-# a heredoc feeding an INTERPRETER is explicitly fine. Python performs the
-# write, atomically, with parents created.
+# policy_gate.py was written, tested and green while `mise run
+# check:policy-decisions` reported "unknown gate: policy" -- the module existed
+# and nothing could reach it. The task was the only caller, and the task had
+# never been run against a working implementation.
 #
-# stdin.buffer, NEVER stdin. Reading text applies an encoding and newline
-# translation, which would defeat the verbatim guarantee at the last step.
-#
-# THE COMMAND THEN JUDGES WHAT IT WROTE. Authoring is not a gate; observing is.
-# The file is read BACK FROM DISK and the Verdict printed as data, so a
-# corrupted transport fails the command rather than passing because `cat`
-# returned zero.
+# THE LESSON IS THE ONE THIS REPOSITORY KEEPS RELEARNING: a component is not
+# done when its tests pass, but when the path production takes has been walked.
+# The same gap produced the sys.argv slice that no in-process test could kill.
 
 import os
 import sys
@@ -61,6 +60,7 @@ VERDICT_DIRECTORY = Path(".artifacts/verdicts")
 ROOT_VARIABLE = "CS1090A_GATE_ROOT"
 USAGE = (
     "usage: python -m cs1090a_spec_driven_development mutants\n"
+    "       python -m cs1090a_spec_driven_development policy\n"
     "       python -m cs1090a_spec_driven_development author <path>  # payload on stdin"
 )
 
@@ -131,9 +131,9 @@ def run_author(path: str, root: Path) -> int:
     """Write a file from stdin, then judge what landed.
 
     THE REQUEST IS VALIDATED BEFORE ANYTHING IS TOUCHED. An empty payload or a
-    traversing path raises here, leaving any existing file intact -- which is
-    the guarantee a redirect cannot make, since it truncates the target before
-    the payload arrives.
+    traversing path raises here, leaving any existing file intact -- the
+    guarantee a redirect cannot make, since it truncates the target before the
+    payload arrives.
     """
     request = AuthoringRequest(path=Path(path), payload=read_payload())
     written = author_verbatim(request, root=root)
@@ -153,11 +153,22 @@ def usage(arguments: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Dispatch to a command by name."""
+    """Dispatch to a command by name.
+
+    THE POLICY IMPORT IS LOCAL, DELIBERATELY. policy_gate imports this module
+    for `record` and `report`; importing it at module scope would close the
+    cycle and fail at interpreter start rather than at the one command that
+    needs it.
+    """
     arguments = sys.argv[1:] if argv is None else argv
 
     if arguments == ["mutants"]:
         return run_mutation_gate(gate_root())
+
+    if arguments == ["policy"]:
+        from cs1090a_spec_driven_development.policy_gate import run_policy_gate
+
+        return run_policy_gate(gate_root())
 
     if len(arguments) == 2 and arguments[0] == "author":
         return run_author(arguments[1], gate_root())

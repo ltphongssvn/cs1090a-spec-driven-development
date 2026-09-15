@@ -92,7 +92,7 @@ class TestMutationStatsContract:
         parsed = MutationStats.model_validate(CLEAN)
 
         with pytest.raises(ValidationError):
-            parsed.survived = 5
+            parsed.survived = 5  # type: ignore[misc]
 
 
 class TestVerdictDerivation:

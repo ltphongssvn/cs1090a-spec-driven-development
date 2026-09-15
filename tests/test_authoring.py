@@ -257,7 +257,7 @@ class TestAuthorVerbatim:
         )
 
         with pytest.raises(ValidationError):
-            written.bytes_written = 0
+            written.bytes_written = 0  # type: ignore[misc]
 
 
 class TestObserveWrittenFile:

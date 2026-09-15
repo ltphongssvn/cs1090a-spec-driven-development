@@ -182,7 +182,7 @@ class TestCheckContract:
         result = check()
 
         with pytest.raises(ValidationError):
-            result.verdict = CheckVerdict.FAIL
+            result.verdict = CheckVerdict.FAIL  # type: ignore[misc]
 
     def test_unknown_fields_are_rejected(self) -> None:
         with pytest.raises(ValidationError):

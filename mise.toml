@@ -9,24 +9,21 @@
 # --- WHY THERE IS NO [tools] BLOCK --------------------------------------------
 #
 # Declaring the same tools here AND in flake.nix is two declarations of one
-# fact, which is exactly the drift this repository exists to remove, reproduced
-# at its centre. flake.nix is the single declaration.
-#
-# THERE IS ALSO NO [settings] BLOCK. `lockfile = true` and `install_before`
-# govern mise's TOOL INSTALLATION. With no tools to install they enforce
-# nothing, and a setting that enforces nothing is a claim of coverage this
-# repository does not make. flake.lock is the lockfile.
+# fact, which is the drift this repository exists to remove, reproduced at its
+# centre. flake.nix is the single declaration, and policies/repository/ now
+# REFUSES a [tools] block rather than trusting this comment.
 
 [task_config]
-# EVERY TASK RUNS INSIDE THE NIX DEVSHELL. Without it `uv` and the rest are
-# unresolvable, because nothing puts them on PATH for a task body.
+# EVERY TASK RUNS INSIDE THE NIX DEVSHELL. Without it `uv`, `opa` and the rest
+# are unresolvable, because nothing puts them on PATH for a task body.
 #
 # THE SHELL IS ALSO PINNED. mise defaults to `sh`, which is bash-in-POSIX-mode
 # on macOS and dash on the Ubuntu runner: same task body, different interpreter,
 # green locally and dead in CI.
 #
-# BASH DOES NOT SET errexit, WHICH IS WHY EVERY MULTI-COMMAND TASK BELOW OPENS
-# WITH `set -euo pipefail`.
+# BASH DOES NOT SET errexit, WHICH IS WHY EVERY MULTI-COMMAND TASK OPENS WITH
+# `set -euo pipefail` -- and why a policy now enforces it rather than trusting
+# this note.
 shell = "nix develop --command bash -c"
 
 # --- Nix ----------------------------------------------------------------------
@@ -46,14 +43,31 @@ run = "nix flake check --no-build --all-systems"
 
 [tasks.fmt]
 description = "Apply every safe autofix: formatting AND import ordering"
-# `;` NOT `&&`. ruff check --fix exits non-zero when a finding has no safe
-# autofix, which with && would stop the formatter running -- and the formatter
-# is often what resolves the remaining finding, since line-length is fixed by
-# rewrapping.
-run = "uv run ruff check --fix . ; uv run ruff format ."
+# FIX AND VERIFY ARE DIFFERENT COMMANDS. `fmt` applies what can be applied;
+# `lint` reports what remains. Conflating them makes the fixer fail for findings
+# it was never able to fix, which trains people to ignore its exit code.
+#
+# THE EXIT CODES ARE RUFF'S, AND THEY ARE DOCUMENTED:
+#   0  no violations, OR every violation was fixed automatically
+#   1  violations remain that no safe autofix could resolve
+#   2  ruff terminated abnormally -- invalid config, or an internal error
+#
+# SO 1 IS EXPECTED HERE AND 2 IS NOT. The policy gate denied the previous
+# version of this task for running two commands without errexit, and it was
+# right: with a bare `;` and no `set -e`, the task's exit code was the
+# formatter's alone and a broken ruff reported success.
+#
+# `|| true` WOULD HAVE BEEN THE EASY FIX AND IS TOO BROAD -- it swallows exit 2
+# along with exit 1, which is the one case that means the toolchain itself is
+# wrong. Accepting exactly 1 states the intent and keeps a real failure fatal.
+run = '''
+set -euo pipefail
+uv run ruff check --fix . || [ $? -eq 1 ]
+uv run ruff format .
+'''
 
 [tasks.lint]
-description = "Lint (the same invocation the gate runner uses)"
+description = "Verify: report every finding, fix nothing"
 run = "uv run ruff check ."
 
 [tasks.types]
@@ -78,12 +92,45 @@ description = "Tests requiring network and credentials"
 # exists and never executes.
 run = "uv run pytest -m integration"
 
+# --- Policy as code -----------------------------------------------------------
+#
+# THE SPLIT IS A DIFFERENCE IN KIND, not a convenience:
+#
+#   check:policy            are the policies well-formed, idiomatic and tested?
+#   check:policy-decisions  does THIS REPOSITORY satisfy them?
+#
+# A policy suite can be immaculate and enforce nothing, which is why the second
+# task exists and why it reads real configuration rather than a fixture. It has
+# already earned its place twice: it found a false positive in its own parsing
+# rule, and then a real defect in the fmt task above.
+
+[tasks."check:policy"]
+description = "Format, check, lint and unit-test every Rego policy"
+# --fail-on-empty IS NOT OPTIONAL: `opa test` SUCCEEDS when zero tests run, so a
+# renamed package or mistyped path reports green while testing nothing. The
+# policies themselves refuse a task that omits the flag.
+#
+# --strict TURNS WARNINGS INTO ERRORS, so an unused import or shadowed variable
+# fails here rather than being read past.
+run = '''
+set -euo pipefail
+opa fmt --fail --diff policies/
+opa check --strict policies/
+regal lint policies/
+opa test policies/ --fail-on-empty
+'''
+
+[tasks."check:policy-decisions"]
+description = "Evaluate this repository against its own policies, and record the verdict"
+run = "uv run python -m cs1090a_spec_driven_development policy"
+
+# --- Security -----------------------------------------------------------------
+
 [tasks."check:workflow"]
 description = "Audit the GitHub Actions workflow that runs this gate"
 # THE PIPELINE AUDITS ITSELF. zizmor found actions/checkout persisting the job
 # token in .git/config -- a credential left on disk for a run whose last step
-# uploads an artifact directory. Running it as a task means the next such change
-# is caught by the pipeline rather than by someone remembering to look.
+# uploads an artifact directory.
 run = "zizmor .github/workflows/ci.yml"
 
 [tasks."check:secrets"]
@@ -112,17 +159,12 @@ description = "Write a file from stdin, atomically, then judge what landed"
 # to a sibling temporary file and renames it over the target -- then reads it
 # BACK and emits a Verdict, so a corrupted transport fails the command rather
 # than passing because `cat` returned zero.
-#
-# A HEREDOC FEEDING AN INTERPRETER IS FINE, and is what 2026 tooling permits
-# while blocking `cat > file`. The shell carries bytes; Python writes them.
 usage = '''
 arg "<path>" help="Path relative to the repository root"
 '''
 run = 'uv run python -m cs1090a_spec_driven_development author "${usage_path?}"'
 
 # --- Mutation testing ---------------------------------------------------------
-#
-# ZERO SURVIVORS, ENFORCED RATHER THAN REMEMBERED.
 
 [tasks.mutants]
 description = "Mutate the package and run the suite against every mutant, from scratch"
@@ -134,9 +176,7 @@ description = "Mutate the package and run the suite against every mutant, from s
 # 0.00 mutations/second and re-tests NOTHING.
 #
 # THIS REPOSITORY ALREADY GOT A WRONG ANSWER FROM IT: a cached run reported 35
-# survivors while a scratch run of the same code reported 7. A gate reading that
-# artifact would have published a number nobody produced -- the same class of
-# defect as a verdict announced by `echo`, one layer further back.
+# survivors while a scratch run of the same code reported 7.
 run = '''
 set -euo pipefail
 rm -rf mutants
@@ -146,9 +186,7 @@ uv run mutmut export-cicd-stats
 
 [tasks."mutants:check"]
 description = "Fail unless the last mutation run killed every mutant"
-# EXIT 2 MEANS THE RUN MEASURED NOTHING, which is neither pass nor fail. See
-# src/cs1090a_spec_driven_development/mutation.py for why that distinction is
-# load-bearing here specifically.
+# EXIT 2 MEANS THE RUN MEASURED NOTHING, which is neither pass nor fail.
 run = "uv run python -m cs1090a_spec_driven_development mutants"
 
 [tasks."mutants:survivors"]
@@ -221,8 +259,7 @@ description = "Apply repository settings and branch ruleset (idempotent)"
 # collapse commits whose reasoning is the most valuable thing in this history.
 #
 # THE READBACK IS THE POINT. Applying a ruleset proves a request was accepted;
-# reading it back proves what the SERVER now holds. A ruleset edited to require
-# nothing is the failure mode that looks exactly like success.
+# reading it back proves what the SERVER now holds.
 run = '''
 set -euo pipefail
 
@@ -257,24 +294,6 @@ gh api "repos/{owner}/{repo}/rulesets" \
 '''
 
 # --- Workflow -----------------------------------------------------------------
-
-[tasks.status]
-description = "Show branch, working tree, and how it relates to develop"
-run = '''
-set -euo pipefail
-echo "branch:   $(git rev-parse --abbrev-ref HEAD)"
-echo "upstream: $(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo '(none)')"
-echo
-echo "--- working tree ---"
-if [ -z "$(git status --porcelain)" ]; then
-  echo "clean"
-else
-  git status --short
-fi
-echo
-echo "--- unmerged into develop ---"
-git log --oneline develop..HEAD 2>/dev/null || echo "(on develop)"
-'''
 
 [tasks.pr]
 description = "Open a pull request against develop"
@@ -314,7 +333,7 @@ description = "Cut a feature branch from origin/develop in THIS shell"
 #
 #   eval "$(mise run start:here <slug>)"
 usage = '''
-arg "<slug>" help="Short kebab-case description, e.g. spec-governance-core"
+arg "<slug>" help="Short kebab-case description, e.g. git-topology"
 '''
 run = '''
 set -euo pipefail
@@ -329,9 +348,14 @@ esac
 '''
 
 # --- Worktrees ----------------------------------------------------------------
-# SHELL FOR NOW, AND THIS IS THE ONE PLACE THE REPOSITORY OWES ITSELF A DEBT.
-# These tasks should delegate to a TESTED Python module; they cannot yet,
-# because that module has no failing test to justify it.
+# SHELL FOR NOW, AND THIS IS THE DEBT THIS BRANCH EXISTS TO REPAY. These tasks
+# should delegate to a TESTED module that inspects git topology through
+# porcelain output rather than string comparison.
+#
+# THE MEASUREMENT THAT PROVES THE POINT: a real bash parser reads 19 of this
+# file's 25 task bodies. The six it cannot read are repo:configure, setup,
+# start:check, start:here, worktree:add and worktree:remove -- every task with
+# real shell logic. A body no parser can read is a body nobody can analyse.
 #
 # THE ? IN ${usage_slug?} IS THE POINT: bash parameter expansion that FAILS when
 # the variable is unset rather than expanding to empty. Without it a missing
@@ -341,7 +365,7 @@ esac
 [tasks."worktree:add"]
 description = "Create a sibling worktree on a new feature branch, cut from origin/develop"
 usage = '''
-arg "<slug>" help="Short kebab-case description, e.g. spec-governance-core"
+arg "<slug>" help="Short kebab-case description, e.g. git-topology"
 '''
 run = '''
 set -euo pipefail
